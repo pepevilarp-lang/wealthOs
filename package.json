@@ -1,5 +1,12 @@
 {
   "name": "wealthos",
   "version": "1.0.0",
-  "private": true
+  "description": "WealthOS - Sistema operativo patrimonial",
+  "private": true,
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "build": "echo 'Static site - no build needed'"
+  }
 }
