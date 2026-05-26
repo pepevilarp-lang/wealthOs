@@ -1,8 +1,7 @@
-// /api/groq.js — Proxy para Groq API (texto + visión)
+// /api/groq.js — Proxy para Groq API (con retry anti-429)
 // Variable de entorno requerida: GROQ_API_KEY
 
 export default async function handler(req, res) {
-  // CORS preflight
   if (req.method === 'OPTIONS') {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
@@ -16,14 +15,35 @@ export default async function handler(req, res) {
 
   const apiKey = process.env.GROQ_API_KEY;
   if (!apiKey) {
-    console.error('[/api/groq] FALTA variable de entorno GROQ_API_KEY');
     return res.status(500).json({
-      error: {
-        message: 'GROQ_API_KEY no configurada en Vercel. Ve a Settings → Environment Variables y añádela.',
-        type: 'missing_api_key'
-      }
+      error: { message: 'GROQ_API_KEY no configurada', type: 'missing_api_key' }
     });
   }
+
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+  const callGroq = async (payload, headers, attempt = 0) => {
+    const response = await fetch(
+      'https://api.groq.com/openai/v1/chat/completions',
+      {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(payload)
+      }
+    );
+
+    const data = await response.json();
+
+    // 🔁 Manejo de RATE LIMIT (429)
+    if (response.status === 429 && attempt < 3) {
+      const waitTime = 500 * Math.pow(2, attempt); // 500ms, 1000ms, 2000ms
+      console.warn(`⏳ 429 recibido. Reintentando en ${waitTime}ms...`);
+      await sleep(waitTime);
+      return callGroq(payload, headers, attempt + 1);
+    }
+
+    return { response, data };
+  };
 
   try {
     const body = req.body || {};
@@ -31,25 +51,21 @@ export default async function handler(req, res) {
 
     if (!model || !messages) {
       return res.status(400).json({
-        error: { message: 'Faltan campos: model y messages son obligatorios.' }
+        error: { message: 'Faltan campos: model y messages.' }
       });
     }
 
-    // Groq usa formato OpenAI: system message va como primer message con role:'system'
     const groqMessages = [];
+
     if (system) {
       groqMessages.push({ role: 'system', content: system });
     }
-    
-    // Convertir mensajes — adaptar formato de imagen si viene de Claude format
+
     for (const msg of messages) {
       if (typeof msg.content === 'string') {
         groqMessages.push(msg);
       } else if (Array.isArray(msg.content)) {
-        // Puede tener bloques tipo {type:'image', source:{type:'base64',...}} (formato Claude)
-        // o tipo {type:'image_url', image_url:{url:...}} (formato OpenAI/Groq)
         const convertedContent = msg.content.map(block => {
-          // Formato Claude → convertir a Groq
           if (block.type === 'image' && block.source?.type === 'base64') {
             return {
               type: 'image_url',
@@ -58,9 +74,9 @@ export default async function handler(req, res) {
               }
             };
           }
-          // Ya está en formato OpenAI/Groq
           return block;
         });
+
         groqMessages.push({ role: msg.role, content: convertedContent });
       } else {
         groqMessages.push(msg);
@@ -70,52 +86,45 @@ export default async function handler(req, res) {
     const payload = {
       model,
       messages: groqMessages,
-      max_tokens: max_tokens || 1024,
+      max_tokens: max_tokens || 1024
     };
+
     if (temperature !== undefined) payload.temperature = temperature;
-    // Soporte para compound_custom (web search settings)
     if (body.compound_custom) payload.compound_custom = body.compound_custom;
 
     const headers = {
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${apiKey}`
     };
-    // Compound models need version header
+
     if (model.startsWith('groq/compound')) {
       headers['Groq-Model-Version'] = 'latest';
     }
 
-    console.log(`[/api/groq] → model=${model}, msgs=${groqMessages.length}, max_tokens=${payload.max_tokens}`);
+    console.log(`→ Groq request: model=${model}, msgs=${groqMessages.length}`);
 
-    const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(payload)
-    });
-
-    const data = await response.json();
+    const { response, data } = await callGroq(payload, headers);
 
     if (!response.ok) {
-      console.error('[/api/groq] Groq API error:', response.status, JSON.stringify(data).slice(0, 500));
+      console.error('Groq error:', response.status, data);
+
       return res.status(response.status).json({
         error: {
-          message: data.error?.message || `Groq API error ${response.status}`,
+          message: data.error?.message || 'Groq API error',
           type: data.error?.type || 'groq_error',
-          groq_error: data.error
+          status: response.status
         }
       });
     }
 
-    // Groq devuelve formato OpenAI: { choices: [{ message: { content: '...' } }] }
-    // Normalizamos a formato compatible con extractAIText del frontend
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.status(200).json(data);
+    return res.status(200).json(data);
 
   } catch (err) {
-    console.error('[/api/groq] Exception:', err.message);
-    res.status(500).json({
+    console.error('Proxy exception:', err);
+    return res.status(500).json({
       error: {
-        message: `Error interno del proxy Groq: ${err.message}`,
+        message: `Error interno: ${err.message}`,
         type: 'proxy_error'
       }
     });
