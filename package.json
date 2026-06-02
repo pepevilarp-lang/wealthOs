@@ -1,0 +1,13 @@
+{
+  "name": "orbit",
+  "version": "6.1.0",
+  "description": "Orbit - Entiende tu dinero",
+  "main": "index.html",
+  "type": "module",
+  "engines": {
+    "node": "22.x"
+  },
+  "scripts": {
+    "build": "echo 'Static site - no build needed'"
+  }
+}
