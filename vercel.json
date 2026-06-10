@@ -1,6 +1,5 @@
 {
   "outputDirectory": ".",
-  "buildCommand": "npm install",
   "crons": [
     { "path": "/api/send-push", "schedule": "0 6 * * *" }
   ]
