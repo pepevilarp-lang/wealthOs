@@ -1,6 +1,5 @@
-// Envío del resumen diario. Lo dispara el cron de Vercel (vercel.json).
-// ENV necesarias: VAPID_PUBLIC, VAPID_PRIVATE, VAPID_SUBJECT (mailto:tu@email),
-//                 SUPABASE_URL, SUPABASE_SERVICE_ROLE, FINNHUB_KEY, (opcional) CRON_SECRET
+// send-push.js — resumen diario personalizado. Disparado por cron (vercel.json).
+// ENV: VAPID_PUBLIC, VAPID_PRIVATE, VAPID_SUBJECT, SUPABASE_URL, SUPABASE_SERVICE_ROLE, FINNHUB_KEY, (opc) CRON_SECRET
 import webpush from 'web-push';
 
 async function topNews() {
@@ -13,26 +12,20 @@ async function topNews() {
 }
 
 export default async function handler(req, res) {
-  // Protección opcional del cron
   if (process.env.CRON_SECRET) {
     const auth = req.headers['authorization'] || '';
     if (auth !== `Bearer ${process.env.CRON_SECRET}`) return res.status(401).json({ error: 'no autorizado' });
   }
   const SU = process.env.SUPABASE_URL, SR = process.env.SUPABASE_SERVICE_ROLE;
-  if (!SU || !SR) return res.status(500).json({ error: 'Falta SUPABASE_URL / SUPABASE_SERVICE_ROLE' });
+  if (!SU || !SR) return res.status(500).json({ error: 'Falta Supabase' });
   if (!process.env.VAPID_PUBLIC || !process.env.VAPID_PRIVATE) return res.status(500).json({ error: 'Falta VAPID' });
 
   webpush.setVapidDetails(process.env.VAPID_SUBJECT || 'mailto:hola@orbit.app', process.env.VAPID_PUBLIC, process.env.VAPID_PRIVATE);
 
-  // Construir el cuerpo del resumen
   const news = await topNews();
-  const headlines = news.map(n => n.headline);
-  const title = headlines.length ? `Buenos días · ${headlines.length} noticias clave` : 'Buenos días · tu resumen Orbit';
-  const body = headlines.length ? headlines.slice(0, 2).join('  ·  ') : 'Abre Orbit para ver qué mueve hoy tu patrimonio.';
-  const payload = JSON.stringify({ title, body, url: './', tag: 'orbit-daily' });
+  const firstHeadline = news.length ? news[0].headline : '';
 
-  // Leer suscripciones (service role salta RLS)
-  const subsRes = await fetch(`${SU}/rest/v1/push_subscriptions?select=endpoint,subscription`, {
+  const subsRes = await fetch(`${SU}/rest/v1/push_subscriptions?select=endpoint,subscription,name`, {
     headers: { apikey: SR, Authorization: `Bearer ${SR}` }
   });
   const rows = await subsRes.json();
@@ -41,6 +34,12 @@ export default async function handler(req, res) {
   let sent = 0, removed = 0;
   await Promise.all(rows.map(async (row) => {
     try {
+      const nm = (row.name || '').trim();
+      const title = nm ? `Buenos días, ${nm} ☀️` : 'Buenos días ☀️';
+      const body = firstHeadline
+        ? `¡Aquí tienes las noticias del día! ${firstHeadline}`
+        : '¡Aquí tienes las noticias del día!';
+      const payload = JSON.stringify({ title, body, url: './?goto=insights', tag: 'orbit-daily' });
       await webpush.sendNotification(row.subscription, payload);
       sent++;
     } catch (err) {
