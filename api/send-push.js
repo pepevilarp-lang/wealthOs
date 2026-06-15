@@ -2,14 +2,6 @@
 // ENV: VAPID_PUBLIC, VAPID_PRIVATE, VAPID_SUBJECT, SUPABASE_URL, SUPABASE_SERVICE_ROLE, FINNHUB_KEY, (opc) CRON_SECRET
 import webpush from 'web-push';
 
-async function topNews() {
-  try {
-    const r = await fetch(`https://finnhub.io/api/v1/news?category=general&token=${process.env.FINNHUB_KEY}`);
-    if (!r.ok) return [];
-    const a = await r.json();
-    return Array.isArray(a) ? a.filter(x => x.headline).slice(0, 3) : [];
-  } catch (_) { return []; }
-}
 
 export default async function handler(req, res) {
   if (process.env.CRON_SECRET) {
@@ -22,9 +14,6 @@ export default async function handler(req, res) {
 
   webpush.setVapidDetails(process.env.VAPID_SUBJECT || 'mailto:hola@orbit.app', process.env.VAPID_PUBLIC, process.env.VAPID_PRIVATE);
 
-  const news = await topNews();
-  const firstHeadline = news.length ? news[0].headline : '';
-
   const subsRes = await fetch(`${SU}/rest/v1/push_subscriptions?select=endpoint,subscription,name`, {
     headers: { apikey: SR, Authorization: `Bearer ${SR}` }
   });
@@ -34,11 +23,13 @@ export default async function handler(req, res) {
   let sent = 0, removed = 0;
   await Promise.all(rows.map(async (row) => {
     try {
-      const nm = (row.name || '').trim();
-      const title = nm ? `Buenos días, ${nm} ☀️` : 'Buenos días ☀️';
-      const body = firstHeadline
-        ? `¡Aquí tienes las noticias del día! ${firstHeadline}`
-        : '¡Aquí tienes las noticias del día!';
+      // Solo nombre real de pila. Si parece un email o usuario técnico, no lo usamos.
+      let nm = (row.name || '').trim();
+      if (nm.includes('@') || /[._0-9]/.test(nm)) nm = '';   // descarta cosas como "aina.martin02"
+      nm = nm.split(/\s+/)[0];                                 // solo el primer nombre
+      if (nm) nm = nm.charAt(0).toUpperCase() + nm.slice(1).toLowerCase();
+      const title = nm ? `Buenos días, ${nm}` : 'Buenos días';
+      const body = '¡Aquí tienes las noticias del día!';
       const payload = JSON.stringify({ title, body, url: './?goto=insights', tag: 'orbit-daily' });
       await webpush.sendNotification(row.subscription, payload);
       sent++;
