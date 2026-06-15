@@ -4,7 +4,7 @@
                             versión vieja (sin splash / con WealthOS) se quede pegada.
    - Estáticos: cache-first (rápidos, offline).
    Sube CACHE_VERSION en cada deploy importante para limpiar lo viejo. */
-const CACHE_VERSION = 'orbit-v32';
+const CACHE_VERSION = 'orbit-v35';
 const STATIC = ['./manifest.json', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', (e) => {
