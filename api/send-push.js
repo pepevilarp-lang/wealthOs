@@ -1,12 +1,13 @@
 // send-push.js — resumen diario personalizado. Disparado por cron (vercel.json).
-// ENV: VAPID_PUBLIC, VAPID_PRIVATE, VAPID_SUBJECT, SUPABASE_URL, SUPABASE_SERVICE_ROLE, FINNHUB_KEY, (opc) CRON_SECRET
+// ENV: VAPID_PUBLIC, VAPID_PRIVATE, VAPID_SUBJECT, SUPABASE_URL, SUPABASE_SERVICE_ROLE, CRON_SECRET (obligatoria: Vercel la envía en cada ejecución del cron)
 import webpush from 'web-push';
 
 
 export default async function handler(req, res) {
-  if (process.env.CRON_SECRET) {
-    const auth = req.headers['authorization'] || '';
-    if (auth !== `Bearer ${process.env.CRON_SECRET}`) return res.status(401).json({ error: 'no autorizado' });
+  const secret = process.env.CRON_SECRET;
+  if (!secret) return res.status(500).json({ error: 'CRON_SECRET no configurada en Vercel' });
+  if ((req.headers['authorization'] || '') !== `Bearer ${secret}`) {
+    return res.status(401).json({ error: 'no autorizado' });
   }
   const SU = process.env.SUPABASE_URL, SR = process.env.SUPABASE_SERVICE_ROLE;
   if (!SU || !SR) return res.status(500).json({ error: 'Falta Supabase' });
