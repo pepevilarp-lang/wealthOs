@@ -9431,40 +9431,7 @@ function openArticleLink(url, title, source) {
   window.open(searchUrl, '_blank', 'noopener');
 }
 
-function generateMockPortfolioNews(keywords) {
-  // Noticias mock personalizadas según keywords del portfolio
-  const baseNews = [
-    {title: 'Mercados europeos cierran al alza tras datos de inflación', source: 'Reuters', days: 0},
-    {title: 'ETFs de renta variable lideran flujos de inversión', source: 'Expansión', days: 1},
-    {title: 'Private Equity acelera consolidaciones en tech', source: 'Bloomberg', days: 1},
-    {title: 'Brokers digitales reportan crecimiento en usuarios', source: 'Cinco Días', days: 2},
-    {title: 'Fondos indexados superan los 5 billones en AUM global', source: 'Financial Times', days: 2},
-    {title: 'Mercado de divisas: EUR/USD toca máximos de 3 meses', source: 'Investing.com', days: 0},
-    {title: 'MSFT y NVDA lideran recuperación del tech sector', source: 'CNBC', days: 1},
-    {title: 'Venture Capital: tendencias de inversión en 2026', source: 'TechCrunch', days: 2},
-  ];
 
-  // Inyectar keywords en los títulos para "personalización"
-  const personalized = baseNews.map(n => {
-    const matchedKw = keywords.find(k => n.title.toLowerCase().includes(k.toLowerCase()));
-    return {
-      ...n,
-      url: '#',
-      publishedAt: new Date(Date.now() - n.days * 24 * 3600 * 1000).toISOString(),
-      description: `Noticias relacionadas con ${matchedKw || 'tu portfolio'}. Lee el artículo completo en ${n.source}.`,
-      relevance: matchedKw ? '↑' : '•'
-    };
-  });
-
-  return personalized.sort((a, b) => {
-    // Priorizar relevantes (con keyword matcheado)
-    const aMatch = a.relevance === '↑' ? 1 : 0;
-    const bMatch = b.relevance === '↑' ? 1 : 0;
-    if (aMatch !== bMatch) return bMatch - aMatch;
-    // Luego por recencia
-    return new Date(b.publishedAt) - new Date(a.publishedAt);
-  });
-}
 
 function openNewsletterSettings() {
   toast('Newsletter contextual: próximamente. Por ahora usa las reflexiones del advisor.', 'info');
@@ -11302,7 +11269,7 @@ async function fetchFinancialNews() {
     const resp = await fetch(url);
     if (!resp.ok) {
       console.warn('[News] API error:', resp.status);
-      return getMockNews(keywords);
+      return [];   // sin datos inventados: si falla, no hay noticias
     }
 
     const data = await resp.json();
@@ -11322,7 +11289,7 @@ async function fetchFinancialNews() {
     return top;
   } catch (e) {
     console.warn('[News] fetch failed:', e);
-    return getMockNews(keywords);
+    return [];   // sin datos inventados: si falla, no hay noticias
   }
 }
 
@@ -11410,40 +11377,7 @@ function getNewsCached() {
   }
 }
 
-function getMockNews(keywords) {
-  // Fallback: mock news based on keywords (for demo when API unavailable)
-  const topics = keywords.length ? keywords : ['mercado valores', 'economía'];
-  const mock = [
-    {
-      title: `Análisis: Impacto de tasas de interés en ${topics[0] || 'patrimonio'}`,
-      description: 'Los cambios recientes en política monetaria afectan principalmente a activos de renta fija. Expertos analizan implicaciones.',
-      url: '#',
-      source: { name: 'Análisis Orbit' },
-      publishedAt: new Date(Date.now() - 2 * 24 * 3600 * 1000).toISOString(),
-      urlToImage: null,
-      score: 8,
-    },
-    {
-      title: 'Private Equity: Tendencias de consolidación en 2026',
-      description: 'Los fondos de PE aceleran estrategias de consolidación en mercados seleccionados.',
-      url: '#',
-      source: { name: 'Análisis Orbit' },
-      publishedAt: new Date(Date.now() - 1 * 24 * 3600 * 1000).toISOString(),
-      urlToImage: null,
-      score: 7,
-    },
-    {
-      title: 'Patrimonio: Diversificación más allá de acciones',
-      description: 'Expertos recomiendan explorar activos alternativos como parte de estrategia de diversificación.',
-      url: '#',
-      source: { name: 'Análisis Orbit' },
-      publishedAt: new Date(Date.now() - 3 * 24 * 3600 * 1000).toISOString(),
-      urlToImage: null,
-      score: 6,
-    },
-  ];
-  return mock;
-}
+
 
 
 

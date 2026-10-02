@@ -1,0 +1,90 @@
+# Orbit — instrucciones del proyecto
+
+## Qué es
+App web instalable (PWA) de finanzas personales. Sitio estático: casi todo vive en `index.html`
+(~18.000 líneas). Funciones de servidor en `/api` desplegadas en Vercel. Base de datos y login en
+Supabase (Postgres con seguridad por fila). IA a través de Groq.
+
+- Despliegue: Vercel, sin paso de build (`vercel.json`). Cron diario de `/api/send-push`.
+- `wealthos_v6.html` es una versión antigua: no editarla; se eliminará.
+
+## Principios innegociables
+1. **Nunca inventar datos.** Prohibido mostrar datos de ejemplo, simulados o de relleno como si fueran
+   reales. Si una fuente falla: mostrar el error y la última cifra válida con su fecha.
+2. **Una sola fuente de verdad por dato: Supabase.** `localStorage` solo para caché y preferencias,
+   nunca como almacén principal.
+3. **Fallar en voz alta.** Nada de `try {} catch {}` vacíos. Toda escritura en Supabase se espera
+   con `await` y su error se comprueba y se muestra.
+4. **Todo dato de mercado lleva fecha, fuente y moneda.** Todo se convierte a EUR con el tipo del BCE
+   (Frankfurter) antes de sumarse.
+5. **Ninguna clave en el cliente.** Solo `process.env` dentro de `/api`.
+6. **Menos funciones, que funcionen bien.** No añadir funcionalidades no pedidas. Núcleo: patrimonio
+   (cartera, private equity, efectivo), gastos, precios, política y registro de decisiones.
+   Congelados: social, noticias, resumen diario, push no esencial.
+7. **Cambios pequeños.** Un cambio lógico por commit, con mensaje descriptivo. Nunca borrar y
+   volver a subir archivos enteros.
+8. **Lógica financiera con prueba previa.** Antes de cambiar un cálculo, escribir casos con números
+   concretos y el resultado esperado, y verificarlos.
+9. **Nunca datos personales en el repositorio.** El repo es público: nada de importes, posiciones,
+   nombres ni documentos reales en código, comentarios, tests o commits.
+
+## Seguridad
+Hecho (1 oct 2026):
+- `/api/news`: sin clave de reserva en el código; error claro si falta `NEWS_API_KEY` y 502 si NewsAPI falla.
+- `/api/health`: ya no devuelve fragmentos de la clave de Groq; rechaza peticiones de otras webs.
+- `/api/send-push`: `CRON_SECRET` obligatoria (Vercel la envía automáticamente en el cron).
+- `/api/groq`: solo peticiones desde la propia app, lista cerrada de modelos
+  (`llama-3.3-70b-versatile`, `meta-llama/llama-4-scout-17b-16e-instruct`, `groq/compound-mini`),
+  tope de 4.000 tokens y de 60 mensajes. Si se añade un modelo nuevo en la app, añadirlo a la lista.
+
+Pendiente:
+- Las claves de Twelve Data, Finnhub y FMP siguen en `index.html`: rotarlas y moverlas al servidor
+  (tarea 2). Hasta entonces, no volver a escribir claves nuevas en el cliente.
+- `/api/groq`: exigir además la sesión de Supabase (JWT). La comprobación de origen frena a otras
+  webs, pero no a quien llame directamente fuera del navegador.
+
+## Problemas conocidos, por prioridad
+
+### 1. Noticias inventadas — resuelto
+`getMockNews()` y `generateMockPortfolioNews()` eliminadas (eran código muerto). Las noticias reales
+salen de `/api/news`. `fetchFinancialNews()` tampoco se usa: candidata a eliminarse.
+
+### 2. Precios
+- Dos caminos: `updateBolsaPricesForBlock()` convierte divisas; `updateBolsaPrices()` no (suma USD
+  como EUR). Dejar una única función.
+- Llamar a precios desde el servidor (`/api/prices` existe y no se usa), no desde el navegador.
+- Resolver cada posición por ISIN una vez y guardar cotización, bolsa y moneda exactas.
+- Cada posición guarda `price`, `currency`, `price_date`, `source`. Si falla, conservar el último
+  precio válido marcado como antiguo; no marcar el bloque como actualizado si alguna posición falló.
+
+### 3. Gastos
+- Los meses se guardan por nombre ("Marzo") sin año y en dos idiomas: los años se mezclan.
+- Sin control de duplicados al importar.
+- `mergeExpenseMovements()` aplica `Math.abs` y `isIncome:false`: los ingresos y devoluciones
+  cuentan como gasto.
+- Todo el historial se guarda como un único JSON que se sobrescribe (se pierden datos entre
+  dispositivos) y el guardado no se espera.
+- El aviso de nómina duplicada compara el mes sin el año y borra documentos.
+- Categorización por 29 palabras clave: la mayoría de conceptos reales caen en "Altres".
+
+Modelo objetivo: tabla `movements` (una fila por movimiento):
+`id, user_id, date (date), amount numeric (negativo = gasto), currency, account_id, concept_raw,
+category, source (import | manual | quick), dedupe_hash, created_at`, con
+`unique(user_id, dedupe_hash)` y seguridad por fila `auth.uid() = user_id`.
+Tabla `category_rules (user_id, pattern, category, priority)`: reglas del usuario que se aplican
+antes que la IA; la IA solo sugiere y el usuario confirma; cada recategorización puede crear regla.
+Migrar los datos actuales usando la fecha de cada movimiento, no la clave del mes.
+
+### 4. Private equity
+- La extracción debe ser **a ciegas**: no pasar al modelo el comprometido ni el desembolsado del
+  bloque. Comparar con el registro propio después, en código.
+- `extractPDFText()` une el texto con espacios y destruye las tablas; no hay OCR para escaneados;
+  el texto se trunca (~30.000 caracteres).
+- Dos tipos de documento: *estado de posición* (fecha valor, nº de acciones, valor liquidativo por
+  acción, desembolsado, distribuciones: valor = acciones × NAV por acción) e *informe trimestral*
+  (solo resumen). El usuario confirma antes de aplicar y el documento queda enlazado como fuente.
+- Conservar la validación existente (`validateFundExtraction`): es correcta.
+
+## Cómo trabajar
+- Una tarea cada vez, en el orden de arriba. Antes de editar, explicar qué se va a cambiar.
+- Tras cada cambio: comprobar la sintaxis de los scripts de `index.html` y describir cómo probarlo.
