@@ -3,12 +3,20 @@
 // Protecciones: solo peticiones desde la propia app, lista cerrada de modelos,
 // tope de tokens. Pendiente: exigir la sesión de Supabase del usuario.
 // Comprueba que la petición viene de la propia app. Los navegadores envían la cabecera
-// Origin en las peticiones POST: si viene de otra web, se rechaza. No sustituye a la
-// autenticación por sesión (pendiente), pero impide que otras páginas usen este endpoint.
+// Origin en las peticiones POST: si viene de otra web, se rechaza. Se compara con la cabecera
+// host y con x-forwarded-host, porque detrás del proxy de Vercel puede llegar en cualquiera.
+// No sustituye a la autenticación por sesión (pendiente).
 function isAllowedOrigin(req) {
   const origin = req.headers.origin;
   if (!origin) return true;
-  try { return new URL(origin).host === req.headers.host; } catch { return false; }
+  let originHost;
+  try { originHost = new URL(origin).host; } catch { originHost = null; }
+  const hosts = [req.headers.host, req.headers['x-forwarded-host']]
+    .filter(Boolean)
+    .flatMap(h => String(h).split(',').map(x => x.trim().toLowerCase()));
+  const ok = !!originHost && hosts.includes(originHost.toLowerCase());
+  if (!ok) console.warn('[origen rechazado]', { origin, host: req.headers.host, xfh: req.headers['x-forwarded-host'] });
+  return ok;
 }
 
 const ALLOWED_MODELS = new Set([
@@ -101,6 +109,7 @@ export default async function handler(req, res) {
       });
     }
     if (!ALLOWED_MODELS.has(model)) {
+      console.warn('[groq] modelo no permitido:', model);
       return res.status(400).json({ error: { message: `Modelo no permitido: ${model}`, type: 'model_not_allowed' } });
     }
     if (messages.length > MAX_MESSAGES) {
