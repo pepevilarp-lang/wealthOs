@@ -1,14 +1,24 @@
 // /api/health.js — Endpoint de diagnóstico para verificar que todo funciona
+// Comprueba que la petición viene de la propia app. Los navegadores envían la cabecera
+// Origin en las peticiones POST: si viene de otra web, se rechaza. No sustituye a la
+// autenticación por sesión (pendiente), pero impide que otras páginas usen este endpoint.
+function isAllowedOrigin(req) {
+  const origin = req.headers.origin;
+  if (!origin) return true;
+  try { return new URL(origin).host === req.headers.host; } catch { return false; }
+}
+
 export default async function handler(req, res) {
-  res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Content-Type', 'application/json');
+  if (!isAllowedOrigin(req)) return res.status(403).json({ error: 'origen no permitido' });
 
   const checks = {
     timestamp: new Date().toISOString(),
     vercel: { ok: true, region: process.env.VERCEL_REGION || 'unknown' },
     env: {
+      // Nunca devolver fragmentos de la clave: solo si está configurada.
       GROQ_API_KEY: process.env.GROQ_API_KEY
-        ? `✓ present (${process.env.GROQ_API_KEY.slice(0,7)}...${process.env.GROQ_API_KEY.slice(-4)})`
+        ? '✓ present'
         : '✗ MISSING — añade GROQ_API_KEY en Vercel Settings → Environment Variables',
     },
     groq: { tested: false, ok: false, error: null, model: null, response: null },
