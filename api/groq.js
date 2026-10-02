@@ -1,15 +1,32 @@
 // /api/groq.js — Proxy para Groq API (con anti-spam + retry 429)
 // Variable de entorno requerida: GROQ_API_KEY
+// Protecciones: solo peticiones desde la propia app, lista cerrada de modelos,
+// tope de tokens. Pendiente: exigir la sesión de Supabase del usuario.
+// Comprueba que la petición viene de la propia app. Los navegadores envían la cabecera
+// Origin en las peticiones POST: si viene de otra web, se rechaza. No sustituye a la
+// autenticación por sesión (pendiente), pero impide que otras páginas usen este endpoint.
+function isAllowedOrigin(req) {
+  const origin = req.headers.origin;
+  if (!origin) return true;
+  try { return new URL(origin).host === req.headers.host; } catch { return false; }
+}
+
+const ALLOWED_MODELS = new Set([
+  'llama-3.3-70b-versatile',
+  'meta-llama/llama-4-scout-17b-16e-instruct',
+  'groq/compound-mini',
+]);
+const MAX_TOKENS_CAP = 4000;   // la app pide como máximo 3500
+const MAX_MESSAGES = 60;
 
 const lastRequestMap = new Map(); // 🔒 cooldown por IP
 
 export default async function handler(req, res) {
   // CORS preflight
-  if (req.method === 'OPTIONS') {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-    return res.status(200).end();
+  if (req.method === 'OPTIONS') return res.status(204).end();   // sin CORS: solo la propia app
+
+  if (!isAllowedOrigin(req)) {
+    return res.status(403).json({ error: { message: 'Origen no permitido.', type: 'forbidden_origin' } });
   }
 
   if (req.method !== 'POST') {
@@ -78,10 +95,16 @@ export default async function handler(req, res) {
     const body = req.body || {};
     const { model, messages, max_tokens, temperature, system } = body;
 
-    if (!model || !messages) {
+    if (!model || !Array.isArray(messages) || !messages.length) {
       return res.status(400).json({
         error: { message: 'Faltan campos: model y messages.' }
       });
+    }
+    if (!ALLOWED_MODELS.has(model)) {
+      return res.status(400).json({ error: { message: `Modelo no permitido: ${model}`, type: 'model_not_allowed' } });
+    }
+    if (messages.length > MAX_MESSAGES) {
+      return res.status(400).json({ error: { message: 'Demasiados mensajes.', type: 'too_many_messages' } });
     }
 
     const groqMessages = [];
@@ -115,11 +138,11 @@ export default async function handler(req, res) {
     const payload = {
       model,
       messages: groqMessages,
-      max_tokens: max_tokens || 1024
+      max_tokens: Math.min(Number(max_tokens) || 1024, MAX_TOKENS_CAP)
     };
 
     if (temperature !== undefined) payload.temperature = temperature;
-    if (body.compound_custom) payload.compound_custom = body.compound_custom;
+    if (body.compound_custom && model.startsWith('groq/compound')) payload.compound_custom = body.compound_custom;
 
     const headers = {
       'Content-Type': 'application/json',
@@ -144,7 +167,6 @@ export default async function handler(req, res) {
       });
     }
 
-    res.setHeader('Access-Control-Allow-Origin', '*');
     return res.status(200).json(data);
 
   } catch (err) {
