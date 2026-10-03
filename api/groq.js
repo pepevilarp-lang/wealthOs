@@ -1,7 +1,7 @@
 // /api/groq.js — Proxy para Groq API (con anti-spam + retry 429)
 // Variable de entorno requerida: GROQ_API_KEY
 // Protecciones: solo peticiones desde la propia app, lista cerrada de modelos,
-// tope de tokens. Pendiente: exigir la sesión de Supabase del usuario.
+// tope de tokens, traducción de modelos retirados. Pendiente: exigir la sesión de Supabase del usuario.
 // Comprueba que la petición viene de la propia app. Los navegadores envían la cabecera
 // Origin en las peticiones POST: si viene de otra web, se rechaza. Se compara con la cabecera
 // host y con x-forwarded-host, porque detrás del proxy de Vercel puede llegar en cualquiera.
@@ -19,10 +19,25 @@ function isAllowedOrigin(req) {
   return ok;
 }
 
+// ── Modelos ─────────────────────────────────────────────────────────────────
+// Groq retira modelos periódicamente (https://console.groq.com/docs/deprecations).
+// La app sigue pidiendo los nombres antiguos; aquí se traducen a los sustitutos oficiales.
+// Para cambiar de modelo sin tocar código: variables GROQ_MODEL_TEXT / GROQ_MODEL_VISION en Vercel.
+const MODEL_TEXT   = process.env.GROQ_MODEL_TEXT   || 'openai/gpt-oss-120b';
+const MODEL_VISION = process.env.GROQ_MODEL_VISION || 'qwen/qwen3.8-27b';
+
+const RETIRED_TO_CURRENT = {
+  'llama-3.3-70b-versatile': MODEL_TEXT,                     // retirado el 16/08/2026
+  'meta-llama/llama-4-scout-17b-16e-instruct': MODEL_VISION, // retirado el 17/07/2026
+};
+// Retirados el 21/09/2026 SIN sustituto. Se usaban para búsqueda web (noticias con URL, datos
+// macro "reales"). Un modelo sin acceso a internet inventaría esos datos: se rechazan.
+const WEB_SEARCH_RETIRED = new Set(['groq/compound', 'groq/compound-mini']);
+
 const ALLOWED_MODELS = new Set([
-  'llama-3.3-70b-versatile',
-  'meta-llama/llama-4-scout-17b-16e-instruct',
-  'groq/compound-mini',
+  ...Object.keys(RETIRED_TO_CURRENT),
+  MODEL_TEXT,
+  MODEL_VISION,
 ]);
 const MAX_TOKENS_CAP = 4000;   // la app pide como máximo 3500
 const MAX_MESSAGES = 60;
@@ -108,6 +123,12 @@ export default async function handler(req, res) {
         error: { message: 'Faltan campos: model y messages.' }
       });
     }
+    if (WEB_SEARCH_RETIRED.has(model)) {
+      return res.status(410).json({ error: {
+        message: 'Esta función usaba búsqueda web (groq/compound-mini), retirada por Groq el 21/09/2026 sin sustituto. Desactivada para no mostrar datos inventados.',
+        type: 'model_retired_no_replacement'
+      } });
+    }
     if (!ALLOWED_MODELS.has(model)) {
       console.warn('[groq] modelo no permitido:', model);
       return res.status(400).json({ error: { message: `Modelo no permitido: ${model}`, type: 'model_not_allowed' } });
@@ -144,25 +165,31 @@ export default async function handler(req, res) {
       }
     }
 
+    // Modelo real: sustituto oficial del retirado; si hay imágenes, siempre el de visión
+    const hasImages = groqMessages.some(m => Array.isArray(m.content) && m.content.some(b => b && b.type === 'image_url'));
+    const resolved = hasImages ? MODEL_VISION : (RETIRED_TO_CURRENT[model] || model);
+
     const payload = {
-      model,
+      model: resolved,
       messages: groqMessages,
       max_tokens: Math.min(Number(max_tokens) || 1024, MAX_TOKENS_CAP)
     };
+    if (resolved.startsWith('openai/gpt-oss')) {
+      // Modelo que razona antes de responder: el razonamiento consume tokens del límite.
+      // Esfuerzo bajo, sin devolver el razonamiento, y margen mínimo para que la respuesta no salga vacía.
+      payload.reasoning_effort = 'low';
+      payload.include_reasoning = false;
+      payload.max_tokens = Math.min(Math.max(payload.max_tokens, 1024), MAX_TOKENS_CAP);
+    }
 
     if (temperature !== undefined) payload.temperature = temperature;
-    if (body.compound_custom && model.startsWith('groq/compound')) payload.compound_custom = body.compound_custom;
 
     const headers = {
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${apiKey}`
     };
 
-    if (model.startsWith('groq/compound')) {
-      headers['Groq-Model-Version'] = 'latest';
-    }
-
-    console.log(`→ Groq request model=${model}, msgs=${groqMessages.length}`);
+    console.log(`→ Groq request model=${model} → ${resolved}, msgs=${groqMessages.length}`);
 
     const { response, data } = await callGroq(payload, headers);
 
@@ -176,6 +203,12 @@ export default async function handler(req, res) {
       });
     }
 
+    // Compatibilidad: parte de la app lee data.content[0].text (formato antiguo). Se añade
+    // sin quitar el formato de Groq (choices), que es el que usa el resto.
+    const text = data?.choices?.[0]?.message?.content;
+    if (typeof text === 'string' && !Array.isArray(data.content)) {
+      data.content = [{ type: 'text', text }];
+    }
     return res.status(200).json(data);
 
   } catch (err) {
