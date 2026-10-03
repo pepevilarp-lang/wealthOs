@@ -37,6 +37,20 @@ Hecho (1 oct 2026):
   (`llama-3.3-70b-versatile`, `meta-llama/llama-4-scout-17b-16e-instruct`, `groq/compound-mini`),
   tope de 4.000 tokens y de 60 mensajes. Si se añade un modelo nuevo en la app, añadirlo a la lista.
 
+Modelos de IA (resuelto 3 oct 2026):
+- El Mentor dejó de funcionar porque Groq retiró los tres modelos que usaba la app:
+  `llama-3.3-70b-versatile` (16/08/2026), `meta-llama/llama-4-scout-17b-16e-instruct` (17/07/2026)
+  y `groq/compound-mini` (21/09/2026, sin sustituto). No era la clave ni la comprobación de origen.
+- `/api/groq` traduce los nombres antiguos a los sustitutos oficiales: texto → `openai/gpt-oss-120b`
+  (razonamiento `low`, sin devolverlo, mínimo 1.024 tokens); imágenes → `qwen/qwen3.8-27b`.
+  Configurable sin tocar código con `GROQ_MODEL_TEXT` y `GROQ_MODEL_VISION` en Vercel.
+- `groq/compound-mini` se rechaza con 410: lo usaban las noticias con URL y el comentario macro de
+  los informes, que necesitan búsqueda web. Un modelo sin internet inventaría esos datos.
+- La respuesta incluye también `content[0].text`: cuatro puntos de la app leían ese formato y
+  recibían texto vacío sin avisar.
+- Revisar https://console.groq.com/docs/deprecations periódicamente.
+- Pendiente: el mensaje de error de `sendChat` culpa siempre a `GROQ_API_KEY`; debe mostrar el error real.
+
 Pendiente:
 - Las claves de Twelve Data, Finnhub y FMP siguen en `index.html`: rotarlas y moverlas al servidor
   (tarea 2). Hasta entonces, no volver a escribir claves nuevas en el cliente.
