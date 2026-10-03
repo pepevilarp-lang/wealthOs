@@ -90,6 +90,16 @@ antes que la IA; la IA solo sugiere y el usuario confirma; cada recategorizació
 Migrar los datos actuales usando la fecha de cada movimiento, no la clave del mes.
 
 ### 4. Private equity
+Resuelto (3 oct 2026):
+- Subir un capital call o una distribución registra el movimiento (`registerPEFlowFromDoc`) y lo SUMA
+  al acumulado, igual que `saveTx`. Antes el importe de la llamada sustituía al desembolsado total
+  y no se creaba ningún movimiento. No se duplica si se sube dos veces el mismo documento.
+- El valor de la posición se ajusta con cada movimiento (`nav_adjustments`, `nav_adjusted_since`)
+  hasta que un informe trae un NAV oficial, que lo sustituye.
+- TVPI, DPI y RVPI de la posición se calculan: (distribuido + NAV) / desembolsado, etc. Los múltiplos
+  que trae un informe son los del fondo y se muestran aparte como "Fondo (informe)".
+
+Pendiente:
 - La extracción debe ser **a ciegas**: no pasar al modelo el comprometido ni el desembolsado del
   bloque. Comparar con el registro propio después, en código.
 - `extractPDFText()` une el texto con espacios y destruye las tablas; no hay OCR para escaneados;
