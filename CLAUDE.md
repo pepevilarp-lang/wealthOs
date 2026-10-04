@@ -141,3 +141,16 @@ Pendiente:
 ## Cómo trabajar
 - Una tarea cada vez, en el orden de arriba. Antes de editar, explicar qué se va a cambiar.
 - Tras cada cambio: comprobar la sintaxis de los scripts de `index.html` y describir cómo probarlo.
+
+## Instinct (6 oct 2026) — paso 3 del plan, adelantado
+- El usuario lo gestiona todo desde Instinct por WhatsApp: las respuestas de `/api/instinct` son la
+  interfaz principal. Campo `message` listo para enviar; cifras siempre calculadas en código.
+- `sql/002_instinct.sql`: `movements`, `budgets`, `savings_goals`, `instinct_tokens` (solo hash),
+  `notifications_sent`. Seguridad por fila en todas.
+- `api/instinct.js`: expense, income, set_budget, set_goal, save, buy, sell, summary, alerts, undo,
+  recent. Importes en céntimos; mes en hora de Europe/Madrid; idempotencia por `request_id`; avisos que
+  no se repiten; deshacer 24 h. Probado con 20 conversaciones contra una base de datos simulada.
+- `instinct.html`: vista móvil del mes y formularios. Token en el fragmento `#t=`; consulta los avisos
+  con `all=1` para no marcarlos como enviados.
+- Guía y texto para Instinct: `docs/INSTINCT.md`. Plan general: `docs/PLAN.md`.
+- Pendiente: Cartera leyendo `movements` (paso 2) y Gastos unificado en `movements` (paso 4).
