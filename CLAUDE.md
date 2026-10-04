@@ -98,6 +98,35 @@ Resuelto (3 oct 2026):
   hasta que un informe trae un NAV oficial, que lo sustituye.
 - TVPI, DPI y RVPI de la posición se calculan: (distribuido + NAV) / desembolsado, etc. Los múltiplos
   que trae un informe son los del fondo y se muestran aparte como "Fondo (informe)".
+- `detectPEFlowType`: el tipo real del documento se detecta por su contenido (nombre, campos, texto).
+  El desplegable de subida viene marcado como "Report trimestral" y los capital calls entraban como
+  informe, sobrescribiendo el desembolsado con el importe de una sola llamada.
+- En avisos de capital call o distribución no se aplica nada de `actualizar_bloque` (ni valor ni
+  acumulados): su importe es el de esa operación.
+- Ningún documento puede hacer bajar `called`, `distributed` ni `committed`.
+- Modelo de una sola fuente de verdad (`recomputePE`): `called`, `distributed`, `committed` y el
+  valor ya no se escriben, se CALCULAN con los movimientos (`pe_transactions`), un saldo inicial
+  (`called_base`, `distributed_base`, `committed_base`) y el último NAV oficial (`nav_official`,
+  `nav_date`). Valor = NAV + calls posteriores − distribuciones posteriores (o coste sin NAV).
+  Se recalcula al cargar, al registrar o borrar un movimiento, al subir documentos y al editar.
+- El formulario de edición conserva los datos que no edita (antes reemplazaba `extra` entero y ponía
+  el distribuido a DPI × desembolsado). Lo tecleado son totales reales; el saldo inicial se deduce.
+- Los movimientos se pueden borrar (`deleteTx`).
+- La app pregunta antes de actuar: enseña el antes/después (desembolsado, pendiente, valor) y pide
+  confirmación; si hay un movimiento igual pregunta si es el mismo; si no encuentra importe o fecha
+  los pide. `peConsistencyHTML` detecta valor ≠ desembolsado neto sin NAV oficial (`nav_source`) y
+  ofrece resolverlo en un toque (`peResolve`).
+
+## Sincronización entre dispositivos (5 oct 2026)
+- Ocho tipos de datos vivían solo en el navegador: presupuestos, objetivos, meta de ahorro,
+  aportaciones, alertas, historial del Mentor, marca de nómina y preferencias.
+- Tabla `user_kv` (`sql/user_kv.sql`, con seguridad por fila). `Storage.prototype.setItem` se
+  intercepta para subir las claves de usuario de la lista `KV_PREFIXES`/`KV_GLOBALS`; `kvSync()` se
+  ejecuta al arrancar (antes de leer esos datos) y gana la versión más reciente por clave. En la
+  primera sincronización, si el dispositivo tenía un valor distinto, se guarda en `orbit_kvbackup_*`.
+- `refreshFromCloud()` recarga todo al volver a la app tras más de 30 s.
+- Las cachés (precios, noticias, ISIN, LLM) no se sincronizan.
+- Limitación: no es en tiempo real con los dos dispositivos abiertos a la vez; gana la última edición.
 
 Pendiente:
 - La extracción debe ser **a ciegas**: no pasar al modelo el comprometido ni el desembolsado del
