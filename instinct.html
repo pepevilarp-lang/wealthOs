@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex">
+<title>Orbit · tu mes</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,500;12..96,700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#F3F5F2; --surface:#FFFFFF; --ink:#1C2321; --muted:#66706B; --line:#DDE3DE;
+  --pine:#2F6B4F; --pine-soft:#E3EEE7; --amber:#B86E14; --amber-soft:#F6EAD7; --over:#B23A3A; --over-soft:#F5E1E1;
+  --r-lg:20px; --r-sm:10px;
+  font-family:'Bricolage Grotesque',ui-sans-serif,system-ui,-apple-system,'Segoe UI',sans-serif;
+  box-sizing:border-box; padding-top:env(safe-area-inset-top,0px); padding-bottom:env(safe-area-inset-bottom,0px);
+}
+@media (prefers-color-scheme:dark){:root{
+  --bg:#121715; --surface:#1A201E; --ink:#E7ECE9; --muted:#97A29C; --line:#2B3431;
+  --pine:#6FB892; --pine-soft:#1F2E27; --amber:#E0A253; --amber-soft:#33281A; --over:#E07B7B; --over-soft:#3A2222;
+}}
+*,*::before,*::after{box-sizing:inherit}
+html,body{margin:0;background:var(--bg);color:var(--ink)}
+body{font-size:16px;line-height:1.45;-webkit-font-smoothing:antialiased}
+main{max-width:520px;margin:0 auto;padding:28px 20px 48px}
+.num{font-variant-numeric:tabular-nums}
+
+/* Lo único llamativo: cuánto te queda y para cuántos días */
+.hero{padding:6px 2px 26px}
+.hero .month{color:var(--muted);font-size:15px;margin:0 0 10px}
+.hero h1{font-size:clamp(34px,10vw,46px);line-height:1.04;font-weight:700;letter-spacing:-.02em;margin:0 0 12px}
+.hero h1 .amt{color:var(--pine)}
+.hero h1.over .amt{color:var(--over)}
+.hero .sub{color:var(--muted);margin:0}
+.track{height:10px;border-radius:99px;background:var(--line);overflow:hidden;margin-top:18px;position:relative}
+.track .fill{height:100%;border-radius:99px;background:var(--pine);width:0;transition:width .9s cubic-bezier(.2,.8,.2,1)}
+.track .today{position:absolute;top:-4px;width:2px;height:18px;background:var(--ink);opacity:.35;border-radius:2px}
+.legend{display:flex;justify-content:space-between;font-size:13px;color:var(--muted);margin-top:8px}
+
+.alert{border-radius:var(--r-sm);padding:12px 14px;margin:0 0 10px;font-size:15px}
+.alert.alta{background:var(--over-soft)} .alert.media{background:var(--amber-soft)} .alert.baja{background:var(--pine-soft)}
+
+section{margin-top:26px}
+h2{font-size:19px;font-weight:600;margin:0 0 12px;letter-spacing:-.01em}
+.rows{background:var(--surface);border-radius:var(--r-lg);padding:6px 16px}
+.row{padding:12px 0;border-bottom:1px solid var(--line)}
+.row:last-child{border-bottom:0}
+.row .top{display:flex;justify-content:space-between;gap:12px;font-size:15px}
+.row .top span:last-child{color:var(--muted)}
+.row .bar{height:6px;border-radius:99px;background:var(--line);margin-top:8px;overflow:hidden}
+.row .bar i{display:block;height:100%;border-radius:99px;background:var(--pine)}
+.row.warn .bar i{background:var(--amber)} .row.over .bar i{background:var(--over)}
+.row.over .top span:last-child{color:var(--over)}
+.empty{color:var(--muted);font-size:15px;padding:14px 0}
+
+/* Apuntar: una acción visible cada vez */
+.tabs{display:flex;gap:6px;overflow-x:auto;padding-bottom:2px;margin-bottom:12px;scrollbar-width:none}
+.tabs button{flex:0 0 auto;border:1px solid var(--line);background:transparent;color:var(--ink);font:inherit;font-size:15px;padding:8px 14px;border-radius:99px;cursor:pointer}
+.tabs button[aria-selected="true"]{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+form{background:var(--surface);border-radius:var(--r-lg);padding:18px 16px;display:grid;gap:12px}
+label{display:grid;gap:5px;font-size:14px;color:var(--muted)}
+input,select{font:inherit;font-size:17px;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:var(--r-sm);padding:11px 12px;width:100%}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.primary{font:inherit;font-size:17px;font-weight:600;border:0;border-radius:var(--r-sm);padding:13px;background:var(--pine);color:#fff;cursor:pointer}
+.primary:disabled{opacity:.5;cursor:wait}
+.result{font-size:15px;padding:12px 14px;border-radius:var(--r-sm);background:var(--pine-soft);white-space:pre-line}
+.result.err{background:var(--over-soft)}
+.undo{background:none;border:0;color:var(--muted);font:inherit;font-size:14px;text-decoration:underline;cursor:pointer;padding:6px 0;justify-self:start}
+button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid var(--pine);outline-offset:2px}
+.notice{background:var(--surface);border-radius:var(--r-lg);padding:20px;margin-top:20px}
+[hidden]{display:none!important}
+@media (prefers-reduced-motion:reduce){.track .fill{transition:none}}
+</style>
+</head>
+<body>
+<main>
+  <div id="noToken" class="notice" hidden>
+    <h2>Falta el token</h2>
+    <p>Abre esta página con tu enlace personal, que termina en <b>#t=</b> seguido del token. Si no lo tienes, créalo en Supabase siguiendo <i>docs/INSTINCT.md</i>.</p>
+  </div>
+
+  <div id="app" hidden>
+    <header class="hero">
+      <p class="month num" id="month"></p>
+      <h1 id="headline" class="num"></h1>
+      <p class="sub num" id="sub"></p>
+      <div class="track" id="track" hidden><div class="fill" id="fill"></div><div class="today" id="todayMark"></div></div>
+      <div class="legend num" id="legend" hidden><span id="legL"></span><span id="legR"></span></div>
+    </header>
+
+    <div id="alerts"></div>
+
+    <section>
+      <h2>Límites del mes</h2>
+      <div class="rows" id="budgets"></div>
+    </section>
+
+    <section>
+      <h2>Objetivos de ahorro</h2>
+      <div class="rows" id="goals"></div>
+    </section>
+
+    <section>
+      <h2>Apuntar</h2>
+      <div class="tabs" role="tablist" id="tabs">
+        <button role="tab" data-f="expense" aria-selected="true">Gasto</button>
+        <button role="tab" data-f="income" aria-selected="false">Ingreso</button>
+        <button role="tab" data-f="save" aria-selected="false">Ahorro</button>
+        <button role="tab" data-f="set_budget" aria-selected="false">Límite</button>
+        <button role="tab" data-f="set_goal" aria-selected="false">Objetivo</button>
+      </div>
+
+      <form data-action="expense">
+        <div class="two">
+          <label>Importe (€)<input name="amount" inputmode="decimal" required placeholder="45,50"></label>
+          <label>Fecha<input name="date" type="date"></label>
+        </div>
+        <label>Concepto<input name="concept" placeholder="Cena con amigos"></label>
+        <label>Categoría<select name="category"><option value="">Detectarla por el concepto</option></select></label>
+        <button class="primary">Apuntar gasto</button>
+      </form>
+      <form data-action="income" hidden>
+        <label>Importe (€)<input name="amount" inputmode="decimal" required placeholder="1.950"></label>
+        <label>Concepto<input name="concept" placeholder="Nómina"></label>
+        <button class="primary">Apuntar ingreso</button>
+      </form>
+      <form data-action="save" hidden>
+        <label>Objetivo<select name="goal" required></select></label>
+        <label>Importe (€)<input name="amount" inputmode="decimal" required placeholder="200"></label>
+        <button class="primary">Apartar</button>
+      </form>
+      <form data-action="set_budget" hidden>
+        <label>Categoría<select name="category" required></select></label>
+        <label>Límite al mes (€)<input name="limit" inputmode="decimal" required placeholder="300"></label>
+        <button class="primary">Guardar límite</button>
+      </form>
+      <form data-action="set_goal" hidden>
+        <label>Nombre<input name="name" required placeholder="Piso"></label>
+        <div class="two">
+          <label>Importe (€)<input name="target" inputmode="decimal" required placeholder="12.000"></label>
+          <label>Para<input name="deadline" type="month"></label>
+        </div>
+        <button class="primary">Guardar objetivo</button>
+      </form>
+
+      <div class="result" id="result" role="status" aria-live="polite" hidden style="margin-top:12px"></div>
+      <button class="undo" id="undo" type="button">Deshacer lo último apuntado</button>
+    </section>
+  </div>
+</main>
+
+<script>
+(function(){
+'use strict';
+const CATS = ['Supermercado','Restaurantes','Transporte','Ocio','Compras','Hogar','Suscripciones','Salud','Viajes','Formación','Regalos','Otros'];
+const MESES = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+function eur(v){
+  const c = Math.round((Number(v) || 0) * 100), neg = c < 0, a = Math.abs(c);
+  return (neg ? '−' : '') + String(Math.floor(a / 100)).replace(/\B(?=(\d{3})+(?!\d))/g, '.') + (a % 100 ? ',' + String(a % 100).padStart(2, '0') : '') + ' €';
+}
+
+// El token llega en el fragmento (#t=…), que no se envía al servidor ni queda en sus registros
+const frag = new URLSearchParams(location.hash.slice(1));
+let token = frag.get('t') || sessionStorage.getItem('orbit_instinct_t') || '';
+if (frag.get('t')) { sessionStorage.setItem('orbit_instinct_t', token); history.replaceState(null, '', location.pathname); }
+if (!token) { $('noToken').hidden = false; return; }
+$('app').hidden = false;
+
+async function api(body, method = 'POST'){
+  const url = method === 'GET' ? '/api/instinct?' + new URLSearchParams(body) : '/api/instinct';
+  const r = await fetch(url, { method, headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+                               body: method === 'POST' ? JSON.stringify(body) : undefined });
+  let j; try { j = await r.json(); } catch { j = { ok: false, message: 'Respuesta no válida del servidor (' + r.status + ').' }; }
+  if (r.status === 401) { sessionStorage.removeItem('orbit_instinct_t'); }
+  return j;
+}
+
+function fillSelects(goals){
+  document.querySelectorAll('select[name="category"]').forEach(sel => {
+    const keep = sel.querySelector('option[value=""]');
+    sel.innerHTML = (keep ? keep.outerHTML : '') + CATS.map(c => `<option>${c}</option>`).join('');
+  });
+  const g = document.querySelector('select[name="goal"]');
+  g.innerHTML = goals.length ? goals.map(x => `<option>${esc(x.name)}</option>`).join('') : '<option value="">Crea primero un objetivo</option>';
+}
+
+function render(d, alerts){
+  const ym = d.month, mes = MESES[Number(ym.slice(5, 7)) - 1], left = d.days_in_month - d.day;
+  $('month').textContent = `${mes[0].toUpperCase() + mes.slice(1)}, día ${d.day} de ${d.days_in_month}`;
+  const limit = d.budgets.reduce((a, b) => a + b.limit, 0);
+  const spentB = d.budgets.reduce((a, b) => a + b.spent, 0);
+  const h = $('headline');
+  if (limit > 0) {
+    const remain = limit - spentB;
+    h.className = 'num' + (remain < 0 ? ' over' : '');
+    h.innerHTML = remain >= 0
+      ? `Te quedan <span class="amt">${eur(remain)}</span> para ${left} día${left === 1 ? '' : 's'}`
+      : `Te has pasado <span class="amt">${eur(-remain)}</span> del límite`;
+    $('sub').textContent = `${eur(spentB)} de ${eur(limit)} en categorías con límite. En total, ${eur(d.spent)}.`;
+    $('track').hidden = $('legend').hidden = false;
+    requestAnimationFrame(() => { $('fill').style.width = Math.min(100, spentB / limit * 100) + '%';
+      $('fill').style.background = spentB > limit ? 'var(--over)' : spentB > limit * .8 ? 'var(--amber)' : ''; });
+    $('todayMark').style.left = `calc(${d.day / d.days_in_month * 100}% - 1px)`;
+    $('legL').textContent = 'Gastado'; $('legR').textContent = 'La raya marca dónde deberías ir hoy';
+  } else {
+    h.className = 'num';
+    h.innerHTML = `<span class="amt">${eur(d.spent)}</span> gastados en ${mes}`;
+    $('sub').textContent = d.income ? `Has ingresado ${eur(d.income)}; balance del mes, ${eur(d.income - d.spent)}.` : 'Pon un límite a alguna categoría para saber cuánto te queda.';
+    $('track').hidden = $('legend').hidden = true;
+  }
+  $('alerts').innerHTML = alerts.map(a => `<div class="alert ${esc(a.level)}">${esc(a.text)}</div>`).join('');
+  $('budgets').innerHTML = d.budgets.length ? d.budgets.sort((a, b) => b.spent / b.limit - a.spent / a.limit).map(b => {
+    const p = b.spent / b.limit, cls = p >= 1 ? 'over' : p >= .8 ? 'warn' : '';
+    return `<div class="row ${cls}"><div class="top num"><span>${esc(b.category)}</span><span>${eur(b.spent)} de ${eur(b.limit)}</span></div>
+            <div class="bar"><i style="width:${Math.min(100, p * 100)}%"></i></div></div>`;
+  }).join('') : '<div class="empty">Sin límites todavía. Crea uno en Apuntar → Límite.</div>';
+  $('goals').innerHTML = d.goals.length ? d.goals.map(g => {
+    const p = g.saved / g.target;
+    const note = g.needMonthly === null ? '' : (g.thisMonth >= g.needMonthly ? 'Al día este mes' : `Faltan ${eur(g.needMonthly - g.thisMonth)} este mes`);
+    return `<div class="row"><div class="top num"><span>${esc(g.name)}</span><span>${eur(g.saved)} de ${eur(g.target)}</span></div>
+            <div class="bar"><i style="width:${Math.min(100, p * 100)}%"></i></div>${note ? `<div style="font-size:13px;color:var(--muted);margin-top:6px">${note}</div>` : ''}</div>`;
+  }).join('') : '<div class="empty">Sin objetivos todavía. Crea uno en Apuntar → Objetivo.</div>';
+  fillSelects(d.goals);
+}
+
+async function load(){
+  // all=1: ver los avisos aquí NO los marca como enviados (Instinct los sigue recibiendo)
+  const [s, a] = await Promise.all([api({ action: 'summary' }, 'GET'), api({ action: 'alerts', all: '1' }, 'GET')]);
+  if (!s.ok) { showResult(s.message, true); return; }
+  render(s.data, (a.ok && a.data.alerts) || []);
+}
+
+function showResult(msg, err){ const r = $('result'); r.hidden = false; r.className = 'result' + (err ? ' err' : ''); r.textContent = msg; }
+
+$('tabs').addEventListener('click', e => {
+  const b = e.target.closest('button[data-f]'); if (!b) return;
+  document.querySelectorAll('#tabs button').forEach(x => x.setAttribute('aria-selected', String(x === b)));
+  document.querySelectorAll('form[data-action]').forEach(f => f.hidden = f.dataset.action !== b.dataset.f);
+});
+document.querySelectorAll('form[data-action]').forEach(f => f.addEventListener('submit', async e => {
+  e.preventDefault();
+  const btn = f.querySelector('.primary'); btn.disabled = true;
+  const body = { action: f.dataset.action, request_id: crypto.randomUUID() };
+  new FormData(f).forEach((v, k) => { if (v !== '') body[k] = v; });
+  try {
+    const r = await api(body);
+    showResult(r.message, !r.ok);
+    if (r.ok) { f.reset(); await load(); }
+  } catch { showResult('Sin conexión. No se ha enviado; inténtalo de nuevo.', true); }
+  btn.disabled = false;
+}));
+$('undo').addEventListener('click', async () => { const r = await api({ action: 'undo' }); showResult(r.message, !r.ok); if (r.ok) load(); });
+load().catch(() => showResult('Sin conexión con Orbit. Revisa tu red y recarga.', true));
+})();
+</script>
+</body>
+</html>
