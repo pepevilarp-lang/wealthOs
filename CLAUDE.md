@@ -154,3 +154,14 @@ Pendiente:
   con `all=1` para no marcarlos como enviados.
 - Guía y texto para Instinct: `docs/INSTINCT.md`. Plan general: `docs/PLAN.md`.
 - Pendiente: Cartera leyendo `movements` (paso 2) y Gastos unificado en `movements` (paso 4).
+
+## Instinct escribe en los almacenes de la app (6 oct 2026)
+- Requisito del usuario: todo lo que apunte Instinct debe verse en la app y viceversa. `api/instinct.js`
+  ya no usa tablas propias para gastos, límites ni objetivos: lee y escribe `user_expense_data` (mismo
+  formato que el Excel y `applyQuickExpense`), `user_kv` (`wealth_budgets_*`, `wealth_goals_legacy_*`) y
+  las categorías de `QUICK_CATS` en catalán. `movements` queda solo para compras y ventas.
+- Cada movimiento de Instinct lleva `id`, `created_at`, `source:'instinct'` y `request_id`.
+- Cliente: `_mergeCloudNewItems` incorpora, antes de cada subida, los movimientos de la nube creados
+  después de la última sincronización (`orbit_exp_synced_*`). Así no se pisan los de Instinct y no se
+  resucita lo borrado. Probado con dos navegadores independientes + Instinct sobre la misma nube.
+- `budgets` y `savings_goals` de 002_instinct.sql quedan sin uso.
