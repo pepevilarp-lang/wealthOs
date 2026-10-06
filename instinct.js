@@ -475,11 +475,22 @@ async function actUndo(uid, b) {
 async function actRecent(uid) {
   const data = await getExpenses(uid);
   const all = [];
-  for (const m of Object.values(data)) (m.items || []).forEach(i => all.push(i));
-  all.sort((a, z) => String(z.created_at || z.date).localeCompare(String(a.created_at || a.date)));
-  const rows = all.slice(0, 8);
+  for (const m of Object.values(data)) (m.items || []).forEach(i => all.push({ at: i.created_at || i.date + 'T00:00:00Z', date: i.date,
+    text: `${i.isIncome ? '+' : '−'}${eur(C(i.amount))} ${i.category || ''}${i.concept && i.concept !== i.category ? ` · ${i.concept}` : ''}` }));
+  const trades = await sb(`movements?select=date,type,ticker,isin,qty,price,currency,amount,created_at&user_id=eq.${uid}&category=eq.cartera&deleted_at=is.null&order=created_at.desc&limit=10`) || [];
+  trades.forEach(t => all.push({ at: t.created_at, date: t.date, text: `${t.type === 'buy' ? 'Compra' : 'Venta'} ${Number(t.qty).toLocaleString('es-ES', { maximumFractionDigits: 6 })} ${t.ticker || t.isin} a ${money(C(t.price), t.currency)}` }));
+  const blocks = await getBlocks(uid);
+  for (const b of blocks.filter(x => x.type === 'pe')) {
+    for (const t of await getTxs(uid, b.id)) {
+      const m = String(t.note || '').match(/Instinct · (\S+)/);
+      all.push({ at: t.created_at || (m && m[1]) || t.date + 'T00:00:00Z', date: t.date,
+        text: `${t.kind === 'call' ? 'Capital call' : t.kind === 'distribution' ? 'Distribución' : 'Compromiso'} ${eur(C(t.amount))} · ${b.name}` });
+    }
+  }
+  all.sort((x, z) => String(z.at).localeCompare(String(x.at)));
+  const rows = all.slice(0, 10);
   if (!rows.length) return ok('Aún no hay movimientos.', { rows: [] });
-  return ok(rows.map(i => `${String(i.date).slice(8, 10)}/${String(i.date).slice(5, 7)} ${i.isIncome ? '+' : '−'}${eur(C(i.amount))} ${i.category || ''}${i.concept && i.concept !== i.category ? ` · ${i.concept}` : ''}`).join('\n'), { rows });
+  return ok(rows.map(r => `${String(r.date).slice(8, 10)}/${String(r.date).slice(5, 7)} ${r.text}`).join('\n'), { rows });
 }
 
 
@@ -655,7 +666,7 @@ async function actAddAsset(uid, b0, today) {
     const comm = toCents(b0.committed ?? b0.commitment ?? 0) || 0;
     Object.assign(extra, { committed_base: comm / 100, called_base: (toCents(b0.called ?? 0) || 0) / 100, distributed_base: 0,
       gp: String(b0.gp || '').slice(0, 80), vintage: String(b0.vintage || '').slice(0, 10) });
-    if (b0.value !== undefined) Object.assign(extra, { nav_official: valueC / 100, nav_date: today, nav_source: 'manual' });
+    if (b0.value !== undefined) Object.assign(extra, { nav_official: valueC / 100, nav_date: dayBefore(today), nav_source: 'manual' });
   }
   if (type === 'bolsa') extra.positions = [];
   const row = { user_id: uid, type, name, value: valueC / 100, eur_value: valueC / 100, currency, notes: String(b0.notes || '').slice(0, 500), extra, deleted: false };
@@ -680,7 +691,8 @@ async function actUpdateAsset(uid, b0, today) {
       return bad(`El valor de ${b.name} sale de sus posiciones. Para cambiarlo, apunta compras, ventas o actualiza precios.`);
     if (b.type === 'pe') {
       const txs = await getTxs(uid, b.id); recomputePE(b, txs);
-      b.extra.nav_official = c / 100; b.extra.nav_date = today; b.extra.nav_source = 'manual';
+      // Valor puesto a mano = posición antes de los movimientos que se registren desde hoy
+      b.extra.nav_official = c / 100; b.extra.nav_date = dayBefore(today); b.extra.nav_source = 'manual';
       recomputePE(b, txs);
     } else { b.value = b.eur_value = c / 100; }
     changes.push(`valor → ${eur(c)}`);
@@ -788,7 +800,7 @@ async function actTradeBolsa(uid, b0, today, type) {
   await recalcBolsa(b);
   await saveBlockRow(b);
   try { await addMovement(uid, { type, date, amount: r2((type === 'buy' ? qty * price + feeC / 100 : qty * price - feeC / 100)), ticker: ticker || null, isin, qty, price, currency: ccy,
-    concept: `${type === 'buy' ? 'Compra' : 'Venta'} ${ticker || isin}`, request_id: b0.request_id || null }); } catch (e) { console.error('[instinct] historial de operaciones:', e); }
+    category: 'cartera', concept: `${type === 'buy' ? 'Compra' : 'Venta'} ${ticker || isin}`, request_id: b0.request_id || null }); } catch (e) { console.error('[instinct] historial de operaciones:', e); }
   return ok(`${msg} Valor de ${b.name}: ${eur(C(b.eur_value))}.`, { account: b.name, value: Number(b.eur_value) });
 }
 
@@ -991,6 +1003,34 @@ async function actNews(uid, b0) {
   return ok(top.map(a => `• [${a.about}] ${a.title} — ${a.source || 'fuente'}, ${a.date.slice(8, 10)}/${a.date.slice(5, 7)}\n  ${a.url}`).join('\n'), { articles: top });
 }
 
+
+// ═══ Recuperar lo apuntado por la primera versión (que escribía en `movements`) ═══
+// Gastos e ingresos → se pasan a la pestaña Gastos. Compras y ventas → se aplican a la cuenta de bolsa.
+// Lo recuperado se marca como borrado en `movements`, así que ejecutarlo dos veces no duplica nada.
+async function actMigrateLegacy(uid, b0, today) {
+  const rows = await sb(`movements?select=*&user_id=eq.${uid}&deleted_at=is.null&order=created_at.asc`) || [];
+  const legacy = rows.filter(r => ['expense', 'income'].includes(r.type) || (['buy', 'sell'].includes(r.type) && r.category !== 'cartera'));
+  if (!legacy.length) return ok('No hay nada pendiente de recuperar: todo está ya en la app.', { migrated: 0 });
+  const nExp = legacy.filter(r => ['expense', 'income'].includes(r.type)).length, nTr = legacy.length - nExp;
+  if (!b0.confirm) {
+    const sample = legacy.slice(0, 8).map(r => `${String(r.date).slice(8, 10)}/${String(r.date).slice(5, 7)} ${r.type === 'expense' ? 'gasto' : r.type === 'income' ? 'ingreso' : r.type === 'buy' ? 'compra' : 'venta'} ${r.ticker ? `${Number(r.qty).toLocaleString('es-ES', { maximumFractionDigits: 6 })} ${r.ticker} a ${money(C(r.price), r.currency)}` : `${eur(C(r.amount))} ${r.concept || ''}`}`).join('\n');
+    return ok(`Encontrados ${nExp} gasto(s)/ingreso(s) y ${nTr} compra(s)/venta(s) apuntados por la versión anterior, que no aparecen en la app:\n${sample}${legacy.length > 8 ? '\n…' : ''}\n¿Los paso a la app? Confírmamelo.`, { needs_confirmation: true, expenses: nExp, trades: nTr });
+  }
+  const done = [], failed = [];
+  for (const r of legacy) {
+    let res;
+    if (r.type === 'expense' || r.type === 'income')
+      res = await actItem(uid, { amount: Number(r.amount), concept: r.concept, category: r.category, date: r.date, request_id: `legacy:${r.id}` }, today, r.type === 'income');
+    else
+      res = await actTradeBolsa(uid, { ticker: r.ticker, isin: r.isin, qty: Number(r.qty), price: Number(r.price), currency: r.currency, date: r.date, request_id: `legacy:${r.id}` }, today, r.type);
+    if (res.status === 200) { await sb(`movements?id=eq.${r.id}&user_id=eq.${uid}`, { method: 'PATCH', body: { deleted_at: new Date().toISOString() } }); done.push(r); }
+    else failed.push(`${r.type} ${r.ticker || r.concept || ''}: ${res.body.message}`);
+  }
+  let msg = `✓ Recuperados ${done.length} de ${legacy.length}: ya están en la app.`;
+  if (failed.length) msg += `\n⚠ No pude pasar ${failed.length}:\n${failed.slice(0, 5).join('\n')}`;
+  return ok(msg, { migrated: done.length, failed: failed.length });
+}
+
 const ok = (message, data) => ({ status: 200, body: { ok: true, message: String(message).replace(/(?<!\.)\.\.(?!\.)/g, '.'), data } });
 const bad = (message) => ({ status: 400, body: { ok: false, message: String(message).replace(/(?<!\.)\.\.(?!\.)/g, '.') } });
 
@@ -1042,6 +1082,7 @@ export default async function handler(req, res) {
       // documentos y noticias
       upload_document: () => actUploadDocument(uid, body),
       news: () => actNews(uid, body),
+      migrate_legacy: () => actMigrateLegacy(uid, body, today),
     };
     if (!map[action]) return res.status(400).json({ ok: false, message: `Acción desconocida. Disponibles: ${Object.keys(map).join(', ')}.` });
     if (req.method === 'GET' && !['summary', 'alerts', 'recent', 'assets', 'pe_status', 'positions', 'news'].includes(action)) return res.status(405).json({ ok: false, message: 'Esta acción requiere POST.' });
