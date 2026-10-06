@@ -165,3 +165,12 @@ Pendiente:
   después de la última sincronización (`orbit_exp_synced_*`). Así no se pisan los de Instinct y no se
   resucita lo borrado. Probado con dos navegadores independientes + Instinct sobre la misma nube.
 - `budgets` y `savings_goals` de 002_instinct.sql quedan sin uso.
+
+## Instinct puede accionar todo (6 oct 2026)
+- 29 acciones en `api/instinct.js`: gastos (alta, edición, borrado), límites, objetivos, activos (alta,
+  edición, archivo), private equity (call, distribución, compromiso, NAV, estado, borrado de movimientos)
+  con `recomputePE` portado del cliente, bolsa (compra, venta, precio, edición y borrado de posiciones,
+  con tipo BCE de Frankfurter y coste medio), documentos (almacén `wealth-docs` + `documents`, misma ruta
+  que `uploadFileToStorage`) y noticias reales de las posiciones vía NewsAPI.
+- Borrados y archivos piden `confirm: true`. Búsqueda de activos por palabras del nombre; si hay empate,
+  pregunta. Probado con los activos reales del usuario (25 casos) más regresión de gastos (10 casos).
