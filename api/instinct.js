@@ -1,19 +1,17 @@
 // /api/instinct.js — Conexión con Instinct (asistente por WhatsApp)
 //
+// Instinct lee y escribe en LOS MISMOS almacenes que la app, para que todo se vea en los dos sitios:
+//   · gastos e ingresos → user_expense_data (la pestaña Gastos, la misma que se llena con el Excel)
+//   · límites           → user_kv, clave wealth_budgets_<usuario>
+//   · objetivos         → user_kv, clave wealth_goals_legacy_<usuario>
+//   · compras y ventas  → movements
 // Autenticación: cabecera  Authorization: Bearer <token>   (nunca en la URL)
 // Variables de entorno: SUPABASE_URL, SUPABASE_SERVICE_ROLE
 //
-// Acciones (POST con JSON { action, ... }; summary y alerts también por GET ?action=):
-//   expense     { amount, concept?, category?, date?, request_id? }
-//   income      { amount, concept?, date?, request_id? }
-//   set_budget  { category, limit }
-//   set_goal    { name, target, deadline? }
-//   save        { goal, amount, date? }           aparta dinero para un objetivo
-//   buy | sell  { ticker? isin?, qty, price, fees?, date?, currency? }
-//   summary     {}                                 resumen del mes
-//   alerts      { all? }                           avisos nuevos (no repite los ya enviados)
-//   undo        { id? }                            deshace lo último apuntado por Instinct (24 h)
-//   recent      {}                                 últimos movimientos
+// Acciones (POST con JSON { action, ... }; summary, alerts y recent también por GET ?action=):
+//   expense { amount, concept?, category?, date?, request_id? }   income { amount, concept?, date?, request_id? }
+//   set_budget { category, limit }   set_goal { name, target, deadline? }   save { goal, amount, request_id? }
+//   buy | sell { ticker? isin?, qty, price, fees?, date? }   summary   alerts { all? }   undo   recent
 // Cada respuesta incluye `message`: texto listo para enviar por WhatsApp.
 
 import crypto from 'crypto';
@@ -22,35 +20,45 @@ const SB_URL = process.env.SUPABASE_URL;
 const SERVICE = process.env.SUPABASE_SERVICE_ROLE;
 const TZ = 'Europe/Madrid';
 
-export const CATEGORIES = ['Supermercado','Restaurantes','Transporte','Ocio','Compras','Hogar',
-  'Suscripciones','Salud','Viajes','Formación','Regalos','Otros'];
+// Categorías de la app (QUICK_CATS y las que asigna al importar el Excel)
+export const CATEGORIES = [
+  { label: 'Alimentació',   icon: '🛒', color: '#0891B2' },
+  { label: 'Restaurants',   icon: '🍽️', color: '#F59E0B' },
+  { label: 'Transport',     icon: '⛽', color: '#6B7280' },
+  { label: 'Esport',        icon: '🏃', color: 'var(--pos)' },
+  { label: 'Oci',           icon: '🎭', color: '#EC4899' },
+  { label: 'Compres',       icon: '🛍️', color: '#8B5CF6' },
+  { label: 'Subscripcions', icon: '📱', color: 'var(--gold)' },
+  { label: 'Viatge',        icon: '✈️', color: '#0EA5E9' },
+  { label: 'Personal',      icon: '👤', color: '#64748B' },
+  { label: 'Altres',        icon: '📦', color: '#9CA3AF' },
+];
+const LABELS = CATEGORIES.map(c => c.label);
+const catInfo = (label) => CATEGORIES.find(c => c.label === label) || { label, icon: '📦', color: '#9CA3AF' };
+// Sinónimos en castellano y catalán → etiqueta de la app
 const SYNONYMS = {
-  supermercado:'Supermercado', super:'Supermercado', mercado:'Supermercado', alimentacion:'Supermercado', compra:'Supermercado',
-  restaurante:'Restaurantes', restaurantes:'Restaurantes', comida:'Restaurantes', cena:'Restaurantes', comer:'Restaurantes',
-  bar:'Restaurantes', bares:'Restaurantes', cafe:'Restaurantes', copas:'Restaurantes', delivery:'Restaurantes',
-  transporte:'Transporte', taxi:'Transporte', gasolina:'Transporte', coche:'Transporte', metro:'Transporte', parking:'Transporte',
-  ocio:'Ocio', cine:'Ocio', concierto:'Ocio', fiesta:'Ocio', deporte:'Ocio', gimnasio:'Salud', gym:'Salud',
-  compras:'Compras', ropa:'Compras', tecnologia:'Compras', amazon:'Compras',
-  hogar:'Hogar', casa:'Hogar', alquiler:'Hogar', luz:'Hogar', agua:'Hogar', internet:'Hogar', movil:'Hogar',
-  suscripcion:'Suscripciones', suscripciones:'Suscripciones', netflix:'Suscripciones', spotify:'Suscripciones',
-  salud:'Salud', farmacia:'Salud', medico:'Salud', dentista:'Salud',
-  viaje:'Viajes', viajes:'Viajes', hotel:'Viajes', vuelo:'Viajes', avion:'Viajes',
-  formacion:'Formación', curso:'Formación', libro:'Formación', libros:'Formación',
-  regalo:'Regalos', regalos:'Regalos', otros:'Otros', otro:'Otros',
+  alimentacio:'Alimentació', alimentacion:'Alimentació', supermercado:'Alimentació', super:'Alimentació', mercado:'Alimentació', compra:'Alimentació', comida:'Alimentació',
+  restaurants:'Restaurants', restaurante:'Restaurants', restaurantes:'Restaurants', cena:'Restaurants', comer:'Restaurants', bar:'Restaurants', bares:'Restaurants', cafe:'Restaurants', copas:'Restaurants',
+  transport:'Transport', transporte:'Transport', taxi:'Transport', gasolina:'Transport', coche:'Transport', metro:'Transport', parking:'Transport',
+  esport:'Esport', deporte:'Esport', deportes:'Esport', gimnasio:'Esport', gym:'Esport',
+  oci:'Oci', ocio:'Oci', cine:'Oci', concierto:'Oci', fiesta:'Oci',
+  compres:'Compres', compras:'Compres', ropa:'Compres', regalo:'Compres', regalos:'Compres', hogar:'Compres', casa:'Compres',
+  subscripcions:'Subscripcions', suscripcion:'Subscripcions', suscripciones:'Subscripcions',
+  viatge:'Viatge', viaje:'Viatge', viajes:'Viatge', hotel:'Viatge', vuelo:'Viatge',
+  personal:'Personal', salud:'Personal', farmacia:'Personal', medico:'Personal', formacion:'Personal', curso:'Personal', peluqueria:'Personal',
+  altres:'Altres', otros:'Altres', otro:'Altres',
 };
 // Palabras clave para clasificar por el concepto cuando no llega categoría
 const KEYWORDS = [
-  ['Supermercado', /mercadona|carrefour|lidl|aldi|dia\b|eroski|consum|caprabo|bonpreu|alcampo|condis|ametller|supermerc/],
-  ['Restaurantes', /restaur|cena|comida|almuerzo|desayuno|bar\b|cafe|cafeter|tagliatella|vips|burger|mcdonald|kfc|telepizza|domino|glovo|uber ?eats|just ?eat|deliveroo|tapas|sushi/],
-  ['Transporte',   /uber(?! ?eats)|cabify|bolt|taxi|renfe|metro|bus\b|tmb|gasolin|repsol|cepsa|bp\b|parking|peaje|vueling|iryo|ouigo/],
-  ['Suscripciones',/netflix|spotify|hbo|max\b|disney|prime video|apple ?one|icloud|youtube premium|chatgpt|claude|suscrip/],
-  ['Compras',      /amazon|zara|mango|pull|bershka|primark|el corte ingles|decathlon|fnac|media ?markt|ikea|aliexpress|shein/],
-  ['Hogar',        /alquiler|endesa|iberdrola|naturgy|aguas|movistar|vodafone|orange|digi|comunidad/],
-  ['Salud',        /farmacia|medic|dentist|fisio|gimnas|gym|optica|clinica|hospital/],
-  ['Ocio',         /cine|concierto|entradas|teatro|museo|fiesta|discoteca|steam|playstation|xbox/],
-  ['Viajes',       /hotel|airbnb|booking|vuelo|ryanair|iberia|viaje/],
-  ['Formación',    /curso|udemy|coursera|libro|academia|master/],
-  ['Regalos',      /regalo/],
+  ['Alimentació',   /mercadona|carrefour|lidl|aldi|dia\b|eroski|consum|caprabo|bonpreu|alcampo|condis|ametller|supermerc|super\b|fruteria|carniceria|panaderia/],
+  ['Restaurants',   /restaur|cena|comida|almuerzo|desayuno|dinar|sopar|bar\b|cafe|cafeter|forn|tagliatella|vips|burger|mcdonald|kfc|telepizza|domino|glovo|uber ?eats|just ?eat|deliveroo|tapas|sushi/],
+  ['Transport',     /uber(?! ?eats)|cabify|bolt|taxi|renfe|metro|bus\b|tmb|gasolin|repsol|cepsa|bp\b|parking|peaje|iryo|ouigo|bicing/],
+  ['Subscripcions', /netflix|spotify|hbo|max\b|disney|prime video|apple ?one|icloud|youtube premium|chatgpt|claude|suscrip|subscrip/],
+  ['Compres',       /amazon|zara|mango|pull|bershka|primark|el corte ingles|decathlon|fnac|media ?markt|ikea|aliexpress|shein|regalo/],
+  ['Esport',        /gimnas|gym|padel|esport|deporte|decathlon/],
+  ['Oci',           /cine|concierto|entradas|teatro|museo|fiesta|discoteca|steam|playstation|xbox/],
+  ['Viatge',        /hotel|airbnb|booking|vuelo|ryanair|iberia|vueling|viaje|viatge/],
+  ['Personal',      /farmacia|medic|dentist|fisio|optica|clinica|peluquer|curso|academia/],
 ];
 
 // ── utilidades ──────────────────────────────────────────────────────────
@@ -98,13 +106,13 @@ export function parseDate(v, today) {
 export function resolveCategory(category, concept) {
   if (category) {
     const c = norm(category);
-    const exact = CATEGORIES.find(x => norm(x) === c);
+    const exact = LABELS.find(x => norm(x) === c);
     if (exact) return exact;
     if (SYNONYMS[c]) return SYNONYMS[c];
   }
   const text = norm(`${category || ''} ${concept || ''}`);
   for (const [cat, re] of KEYWORDS) if (re.test(text)) return cat;
-  return 'Otros';
+  return 'Altres';
 }
 const sha256 = (s) => crypto.createHash('sha256').update(s, 'utf8').digest('hex');
 
@@ -131,51 +139,92 @@ async function authenticate(req) {
   return rows[0].user_id;
 }
 
-// ── cálculos ────────────────────────────────────────────────────────────
-async function monthMovements(uid, ym) {
-  const from = `${ym}-01`, to = `${ym}-${String(daysInMonth(ym)).padStart(2, '0')}`;
-  return sb(`movements?select=id,date,type,amount,category,concept,goal_id,source,created_at&user_id=eq.${uid}&deleted_at=is.null&date=gte.${from}&date=lte.${to}&order=date.asc`) || [];
-}
-const sumCents = (rows, pred) => rows.filter(pred).reduce((a, r) => a + Math.round(Number(r.amount) * 100), 0);
+// ── almacenes de la app ─────────────────────────────────────────────────
+const SP = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+const CA = ['Gener','Febrer','Març','Abril','Maig','Juny','Juliol','Agost','Setembre','Octubre','Novembre','Desembre'];
+const kBudgets = (uid) => `wealth_budgets_${uid}`;
+const kGoals   = (uid) => `wealth_goals_legacy_${uid}`;
 
-async function categoryStatus(uid, category, today) {
-  const ym = today.slice(0, 7);
-  const rows = await monthMovements(uid, ym);
-  const spent = sumCents(rows, r => r.type === 'expense' && r.category === category);
-  const total = sumCents(rows, r => r.type === 'expense');
-  const b = await sb(`budgets?select=monthly_limit&user_id=eq.${uid}&category=eq.${q(category)}&limit=1`);
-  const limit = b && b.length ? Math.round(Number(b[0].monthly_limit) * 100) : null;
-  return { ym, spent, total, limit };
+async function getExpenses(uid) {
+  const r = await sb(`user_expense_data?select=data,updated_at&user_id=eq.${uid}&limit=1`);
+  return (r && r[0] && r[0].data && typeof r[0].data === 'object') ? r[0].data : {};
+}
+async function putExpenses(uid, data) {
+  await sb('user_expense_data?on_conflict=user_id', { method: 'POST', prefer: 'resolution=merge-duplicates,return=minimal',
+    body: { user_id: uid, data, updated_at: new Date().toISOString() } });
+}
+async function getKV(uid, key, fallback) {
+  const r = await sb(`user_kv?select=value,deleted&user_id=eq.${uid}&key=eq.${q(key)}&limit=1`);
+  if (!r || !r[0] || r[0].deleted || r[0].value == null) return fallback;
+  try { return JSON.parse(r[0].value); } catch { return fallback; }
+}
+async function putKV(uid, key, obj) {
+  await sb('user_kv?on_conflict=user_id,key', { method: 'POST', prefer: 'resolution=merge-duplicates,return=minimal',
+    body: { user_id: uid, key, value: JSON.stringify(obj), deleted: false, updated_at: new Date().toISOString() } });
+}
+// La misma regla que la app (applyQuickExpense): mes por nombre, en castellano o catalán
+function monthKeyFor(data, date) {
+  const mi = Number(date.slice(5, 7)) - 1;
+  const found = Object.keys(data).find(k => {
+    const nm = String((data[k] && data[k].name) || k).toLowerCase();
+    return nm.startsWith(SP[mi].toLowerCase().slice(0, 3)) || nm.startsWith(CA[mi].toLowerCase().slice(0, 3));
+  });
+  return found || SP[mi];
+}
+function ensureMonth(data, date) {
+  const key = monthKeyFor(data, date), mi = Number(date.slice(5, 7)) - 1;
+  if (!data[key]) data[key] = { name: key, num: mi + 1, nomina: 0, extra: 0, totalIncome: 0, totalExpense: 0, savings: 0, target: 0, items: [] };
+  if (!Array.isArray(data[key].items)) data[key].items = [];
+  return data[key];
+}
+// Totales recalculados igual que en la app (mergeExpenseMovements)
+function recomputeMonth(m) {
+  const items = m.items || [];
+  m.totalExpense = items.filter(i => !i.isIncome).reduce((a, i) => a + (Number(i.amount) || 0), 0);
+  m.totalIncome  = items.filter(i => i.isIncome).reduce((a, i) => a + (Number(i.amount) || 0), 0) + (Number(m.nomina) || 0) + (Number(m.extra) || 0);
+  m.totalExpense = Math.round(m.totalExpense * 100) / 100;
+  m.totalIncome  = Math.round(m.totalIncome * 100) / 100;
+  m.savings = Math.round((m.totalIncome - m.totalExpense) * 100) / 100;
+}
+const C = (x) => Math.round((Number(x) || 0) * 100);   // a céntimos
+function monthView(data, today) {
+  const m = data[monthKeyFor(data, today)];
+  const items = (m && m.items) || [];
+  const byCat = {};
+  let spent = 0, incomeItems = 0;
+  for (const i of items) {
+    if (i.isIncome) { incomeItems += C(i.amount); continue; }
+    spent += C(i.amount); byCat[i.category || 'Altres'] = (byCat[i.category || 'Altres'] || 0) + C(i.amount);
+  }
+  const income = incomeItems + C(m && m.nomina) + C(m && m.extra);
+  return { spent, income, byCat, items };
 }
 
 function paceLine(spent, limit, today) {
   const ym = today.slice(0, 7), day = Number(today.slice(8, 10)), dim = daysInMonth(ym), left = dim - day;
   if (spent >= limit) return `Has superado el límite de ${eur(limit)} en ${eur(spent - limit)}.`;
   const projected = Math.round(spent / day * dim);
-  const remain = limit - spent;
-  let s = `Te quedan ${eur(remain)} para ${left} día${left === 1 ? '' : 's'}.`;
+  let s = `Te quedan ${eur(limit - spent)} para ${left} día${left === 1 ? '' : 's'}.`;
   if (day >= 5 && projected > limit) s += ` A este ritmo acabarías el mes en ${eur(projected)}.`;
   return s;
 }
-
-async function goalProgress(uid, goal, today) {
-  const rows = await sb(`movements?select=amount,date&user_id=eq.${uid}&deleted_at=is.null&type=eq.saving&goal_id=eq.${goal.id}`) || [];
-  const saved = sumCents(rows, () => true);
-  const thisMonth = sumCents(rows, r => r.date.slice(0, 7) === today.slice(0, 7));
-  const target = Math.round(Number(goal.target) * 100);
-  let needMonthly = null, monthsLeft = null;
-  if (goal.deadline) {
-    const [ty, tm] = today.slice(0, 7).split('-').map(Number), [gy, gm] = goal.deadline.slice(0, 7).split('-').map(Number);
-    monthsLeft = Math.max(1, (gy - ty) * 12 + (gm - tm) + 1);   // incluye el mes en curso
-    needMonthly = Math.max(0, Math.ceil((target - (saved - thisMonth)) / monthsLeft));
-  }
-  return { saved, target, thisMonth, needMonthly, monthsLeft };
+function monthsLeftUntil(deadline, today) {
+  if (!deadline) return null;
+  const d = String(deadline).slice(0, 7);
+  if (!/^\d{4}-\d{2}$/.test(d)) return null;
+  const [ty, tm] = today.slice(0, 7).split('-').map(Number), [gy, gm] = d.split('-').map(Number);
+  return Math.max(1, (gy - ty) * 12 + (gm - tm) + 1);
 }
-
-async function findGoal(uid, nameOrId) {
-  const all = await sb(`savings_goals?select=id,name,target,deadline&user_id=eq.${uid}&archived=eq.false`) || [];
-  const n = norm(nameOrId);
-  return all.find(g => g.id === nameOrId) || all.find(g => norm(g.name) === n) || all.find(g => norm(g.name).includes(n) && n.length >= 3) || null;
+function goalProgress(g, today) {
+  const saved = C(g.current), target = C(g.target);
+  const thisMonth = (g.contribs || []).filter(c => String(c.date).slice(0, 7) === today.slice(0, 7)).reduce((a, c) => a + C(c.amount), 0);
+  const ml = monthsLeftUntil(g.deadline, today);
+  const needMonthly = ml === null ? null : Math.max(0, Math.ceil((target - (saved - thisMonth)) / ml));
+  return { saved, target, thisMonth, needMonthly };
+}
+function findGoal(goals, name) {
+  const n = norm(name);
+  return goals.find(g => g.id === name) || goals.find(g => norm(g.name) === n) || goals.find(g => n.length >= 3 && norm(g.name).includes(n)) || null;
 }
 
 // ── acciones ────────────────────────────────────────────────────────────
@@ -192,51 +241,55 @@ async function addMovement(uid, row) {
   }
 }
 
-async function actExpense(uid, b, today) {
+async function actItem(uid, b, today, isIncome) {
   const cents = toCents(b.amount);
   if (!cents || cents <= 0 || cents > 10000000) return bad('Necesito un importe válido (por ejemplo, 45 o 45,50).');
   const date = parseDate(b.date, today);
   if (!date) return bad('No entiendo la fecha. Usa "hoy", "ayer" o DD/MM/AAAA.');
-  if (date > today) return bad('La fecha es futura. ¿Seguro? Indica la fecha real del gasto.');
-  const category = resolveCategory(b.category, b.concept);
-  const concept = String(b.concept || '').slice(0, 140) || null;
-  // Aviso de posible repetido (mismo importe y concepto en los últimos 10 minutos)
-  const since = new Date(Date.now() - 10 * 60000).toISOString();
-  const recent = await sb(`movements?select=id,concept&user_id=eq.${uid}&type=eq.expense&deleted_at=is.null&amount=eq.${cents / 100}&created_at=gte.${q(since)}`) || [];
-  const looksRepeated = !b.request_id && recent.some(r => norm(r.concept) === norm(concept));
-  const { row, duplicate } = await addMovement(uid, { type: 'expense', date, amount: cents / 100, category, concept, request_id: b.request_id || null });
-  let st = null;
-  try { st = await categoryStatus(uid, category, today); } catch (e) { console.error('[instinct] estado de categoría:', e); }
-  const when = date === today ? 'hoy' : date;
-  let msg = `✓ Apuntado: ${eur(cents)} en ${category}${concept ? ` (${concept})` : ''}, ${when}.`;
-  if (duplicate) msg = `Ya lo tenía apuntado: ${eur(cents)} en ${category}. No lo he duplicado.`;
-  if (!st) msg += ' (Guardado. No he podido calcular el total del mes ahora mismo.)';
-  else if (st.limit) msg += ` Llevas ${eur(st.spent)} de ${eur(st.limit)} en ${category} este mes (${pct(st.spent, st.limit)}%). ${paceLine(st.spent, st.limit, today)}`;
-  else msg += ` ${category} este mes: ${eur(st.spent)}. Total gastado en ${monthName(st.ym)}: ${eur(st.total)}.`;
+  if (date > today) return bad('La fecha es futura. Indica la fecha real.');
+  const category = isIncome ? 'Ingressos' : resolveCategory(b.category, b.concept);
+  const concept = String(b.concept || '').slice(0, 80) || (isIncome ? 'Ingreso' : category);
+  const data = await getExpenses(uid);
+  // Misma petición repetida (reintento de Instinct): no se duplica
+  if (b.request_id) {
+    for (const m of Object.values(data)) {
+      const dup = (m.items || []).find(i => i.request_id === b.request_id);
+      if (dup) return ok(`Ya lo tenía apuntado: ${eur(C(dup.amount))}${dup.category ? ` en ${dup.category}` : ''}. No lo he duplicado.`, { id: dup.id, duplicate: true });
+    }
+  }
+  const m = ensureMonth(data, date);
+  const since = Date.now() - 10 * 60000;
+  const looksRepeated = !b.request_id && !isIncome && m.items.some(i => !i.isIncome && C(i.amount) === cents
+    && norm(i.concept) === norm(concept) && i.created_at && Date.parse(i.created_at) >= since);
+  const info = catInfo(category);
+  const item = { id: crypto.randomUUID(), concept, amount: cents / 100, isIncome, category, icon: isIncome ? '💶' : info.icon,
+    color: isIncome ? 'var(--pos)' : info.color, date, source: 'instinct', created_at: new Date().toISOString(), request_id: b.request_id || null };
+  m.items.push(item);
+  recomputeMonth(m);
+  await putExpenses(uid, data);
+  const v = monthView(data, today), when = date === today ? 'hoy' : date;
+  if (isIncome) return ok(`✓ Ingreso apuntado: ${eur(cents)}, ${when}. Este mes: ${eur(v.income)} de ingresos y ${eur(v.spent)} de gastos.`, { id: item.id });
+  const budgets = await getKV(uid, kBudgets(uid), {});
+  const limit = budgets[category] ? C(budgets[category]) : null;
+  const catSpent = date.slice(0, 7) === today.slice(0, 7) ? (v.byCat[category] || 0) : null;
+  let msg = `✓ Apuntado: ${eur(cents)} en ${category}${concept && concept !== category ? ` (${concept})` : ''}, ${when}.`;
+  if (catSpent !== null && limit) msg += ` Llevas ${eur(catSpent)} de ${eur(limit)} en ${category} este mes (${pct(catSpent, limit)}%). ${paceLine(catSpent, limit, today)}`;
+  else if (catSpent !== null) msg += ` ${category} este mes: ${eur(catSpent)}. Total gastado en ${monthName(today.slice(0, 7))}: ${eur(v.spent)}.`;
   if (looksRepeated) msg += ` ⚠ Parece repetido de hace unos minutos: si lo es, dime "deshaz".`;
-  return ok(msg, { id: row.id, category, date, month_category_spent: st ? st.spent / 100 : null, month_total_spent: st ? st.total / 100 : null, limit: st && st.limit ? st.limit / 100 : null });
-}
-
-async function actIncome(uid, b, today) {
-  const cents = toCents(b.amount);
-  if (!cents || cents <= 0) return bad('Necesito un importe válido.');
-  const date = parseDate(b.date, today);
-  if (!date || date > today) return bad('Fecha no válida.');
-  const { row, duplicate } = await addMovement(uid, { type: 'income', date, amount: cents / 100, category: 'Ingresos', concept: String(b.concept || '').slice(0, 140) || null, request_id: b.request_id || null });
-  const rows = await monthMovements(uid, today.slice(0, 7));
-  const inc = sumCents(rows, r => r.type === 'income'), exp = sumCents(rows, r => r.type === 'expense');
-  return ok(`${duplicate ? 'Ya lo tenía apuntado' : '✓ Ingreso apuntado'}: ${eur(cents)}. Este mes: ${eur(inc)} de ingresos y ${eur(exp)} de gastos.`, { id: row.id });
+  return ok(msg, { id: item.id, category, date });
 }
 
 async function actSetBudget(uid, b, today) {
   const category = resolveCategory(b.category, '');
   const cents = toCents(b.limit);
-  if (!b.category || category === 'Otros' && norm(b.category) !== 'otros') return bad(`Categoría no reconocida. Usa una de: ${CATEGORIES.join(', ')}.`);
+  if (!b.category || (category === 'Altres' && !['altres','otros','otro'].includes(norm(b.category))))
+    return bad(`Categoría no reconocida. Usa una de: ${LABELS.join(', ')}.`);
   if (!cents || cents <= 0) return bad('Necesito un límite válido en euros.');
-  await sb('budgets?on_conflict=user_id,category', { method: 'POST', prefer: 'resolution=merge-duplicates,return=minimal',
-    body: { user_id: uid, category, monthly_limit: cents / 100, updated_at: new Date().toISOString() } });
-  const st = await categoryStatus(uid, category, today);
-  return ok(`✓ Límite de ${category}: ${eur(cents)} al mes. Llevas ${eur(st.spent)} este mes (${pct(st.spent, cents)}%).`, { category, limit: cents / 100 });
+  const budgets = await getKV(uid, kBudgets(uid), {});
+  budgets[category] = cents / 100;
+  await putKV(uid, kBudgets(uid), budgets);
+  const v = monthView(await getExpenses(uid), today), spent = v.byCat[category] || 0;
+  return ok(`✓ Límite de ${category}: ${eur(cents)} al mes. Llevas ${eur(spent)} este mes (${pct(spent, cents)}%).`, { category, limit: cents / 100 });
 }
 
 async function actSetGoal(uid, b, today) {
@@ -244,7 +297,7 @@ async function actSetGoal(uid, b, today) {
   const cents = toCents(b.target);
   if (!name) return bad('¿Cómo se llama el objetivo? (por ejemplo, "Piso").');
   if (!cents || cents <= 0) return bad('Necesito el importe objetivo.');
-  let deadline = null;
+  let deadline = '';
   if (b.deadline) {
     const d = String(b.deadline).match(/^(\d{4})-(\d{1,2})/) || String(b.deadline).match(/^(\d{1,2})[\/.\-](\d{4})$/);
     if (!d) return bad('Fecha límite no válida. Usa AAAA-MM o MM/AAAA.');
@@ -252,15 +305,13 @@ async function actSetGoal(uid, b, today) {
     deadline = `${y}-${String(m).padStart(2, '0')}-01`;
     if (deadline.slice(0, 7) < today.slice(0, 7)) return bad('La fecha límite ya ha pasado.');
   }
-  const existing = await findGoal(uid, name);
-  if (existing && norm(existing.name) === norm(name)) {
-    await sb(`savings_goals?id=eq.${existing.id}`, { method: 'PATCH', body: { target: cents / 100, deadline } });
-  } else {
-    await sb('savings_goals', { method: 'POST', body: { user_id: uid, name, target: cents / 100, deadline }, prefer: 'return=minimal' });
-  }
-  const g = await findGoal(uid, name);
-  const p = await goalProgress(uid, g, today);
-  let msg = `✓ Objetivo "${g.name}": ${eur(p.target)}${deadline ? ` para ${monthName(deadline.slice(0, 7))} de ${deadline.slice(0, 4)}` : ''}. Llevas ${eur(p.saved)} (${pct(p.saved, p.target)}%).`;
+  const goals = await getKV(uid, kGoals(uid), []);
+  let g = goals.find(x => norm(x.name) === norm(name));
+  if (g) { g.target = cents / 100; if (deadline) g.deadline = deadline; }
+  else { g = { id: crypto.randomUUID(), name, type: 'ahorro', target: cents / 100, current: 0, deadline, created: new Date().toISOString() }; goals.push(g); }
+  await putKV(uid, kGoals(uid), goals);
+  const p = goalProgress(g, today);
+  let msg = `✓ Objetivo "${g.name}": ${eur(p.target)}${g.deadline ? ` para ${monthName(g.deadline.slice(0, 7))} de ${g.deadline.slice(0, 4)}` : ''}. Llevas ${eur(p.saved)} (${pct(p.saved, p.target)}%).`;
   if (p.needMonthly !== null) msg += ` Necesitas apartar ${eur(p.needMonthly)} al mes.`;
   return ok(msg, { goal_id: g.id });
 }
@@ -268,17 +319,20 @@ async function actSetGoal(uid, b, today) {
 async function actSave(uid, b, today) {
   const cents = toCents(b.amount);
   if (!cents || cents <= 0) return bad('Necesito un importe válido.');
-  const g = b.goal ? await findGoal(uid, b.goal) : null;
-  if (!g) {
-    const all = await sb(`savings_goals?select=name&user_id=eq.${uid}&archived=eq.false`) || [];
-    return bad(all.length ? `No encuentro ese objetivo. Tienes: ${all.map(x => x.name).join(', ')}.` : 'Aún no tienes objetivos de ahorro. Crea uno primero, por ejemplo: "objetivo Piso, 12.000 € para 09/2030".');
-  }
+  const goals = await getKV(uid, kGoals(uid), []);
+  const g = b.goal ? findGoal(goals, b.goal) : null;
+  if (!g) return bad(goals.length ? `No encuentro ese objetivo. Tienes: ${goals.map(x => x.name).join(', ')}.`
+    : 'Aún no tienes objetivos de ahorro. Crea uno primero, por ejemplo: "objetivo Piso, 12.000 € para 09/2030".');
+  g.contribs = g.contribs || [];
+  if (b.request_id && g.contribs.some(c => c.request_id === b.request_id))
+    return ok(`Ya lo tenía apuntado. "${g.name}": ${eur(C(g.current))} de ${eur(C(g.target))}.`, { duplicate: true });
   const date = parseDate(b.date, today) || today;
-  await addMovement(uid, { type: 'saving', date, amount: cents / 100, goal_id: g.id, concept: `Ahorro: ${g.name}`, request_id: b.request_id || null });
-  const p = await goalProgress(uid, g, today);
+  g.current = Math.round((Number(g.current) || 0) * 100 + cents) / 100;
+  g.contribs.push({ id: crypto.randomUUID(), date, amount: cents / 100, source: 'instinct', created_at: new Date().toISOString(), request_id: b.request_id || null });
+  await putKV(uid, kGoals(uid), goals);
+  const p = goalProgress(g, today);
   let msg = `✓ ${eur(cents)} apartados para "${g.name}": ${eur(p.saved)} de ${eur(p.target)} (${pct(p.saved, p.target)}%).`;
-  if (p.needMonthly !== null) msg += p.thisMonth >= p.needMonthly
-    ? ` Este mes ya cumples lo necesario (${eur(p.needMonthly)}).`
+  if (p.needMonthly !== null) msg += p.thisMonth >= p.needMonthly ? ` Este mes ya cumples lo necesario (${eur(p.needMonthly)}).`
     : ` Para ir al día te faltan ${eur(p.needMonthly - p.thisMonth)} este mes.`;
   return ok(msg, { saved: p.saved / 100, target: p.target / 100 });
 }
@@ -305,85 +359,72 @@ async function actTrade(uid, b, today, type) {
 
 async function buildSummary(uid, today) {
   const ym = today.slice(0, 7), day = Number(today.slice(8, 10)), dim = daysInMonth(ym);
-  const rows = await monthMovements(uid, ym);
-  const spent = sumCents(rows, r => r.type === 'expense');
-  const income = sumCents(rows, r => r.type === 'income');
-  const byCat = {};
-  rows.filter(r => r.type === 'expense').forEach(r => { byCat[r.category] = (byCat[r.category] || 0) + Math.round(Number(r.amount) * 100); });
-  const budgets = await sb(`budgets?select=category,monthly_limit&user_id=eq.${uid}`) || [];
-  const limitTotal = budgets.reduce((a, x) => a + Math.round(Number(x.monthly_limit) * 100), 0);
-  // Solo se compara con el presupuesto lo gastado en categorías que tienen límite
-  const spentBudgeted = budgets.reduce((a, x) => a + (byCat[x.category] || 0), 0);
-  const goals = await sb(`savings_goals?select=id,name,target,deadline&user_id=eq.${uid}&archived=eq.false`) || [];
-  const goalLines = [];
-  for (const g of goals) {
-    const p = await goalProgress(uid, g, today);
-    goalLines.push({ name: g.name, saved: p.saved, target: p.target, needMonthly: p.needMonthly, thisMonth: p.thisMonth });
-  }
-  // Patrimonio a partir de los activos de Orbit
+  const data = await getExpenses(uid);
+  const v = monthView(data, today);
+  const budgets = await getKV(uid, kBudgets(uid), {});
+  const blist = Object.entries(budgets).filter(([, l]) => Number(l) > 0).map(([category, l]) => ({ category, limit: C(l), spent: v.byCat[category] || 0 }));
+  const limitTotal = blist.reduce((a, x) => a + x.limit, 0), spentBudgeted = blist.reduce((a, x) => a + x.spent, 0);
+  const goals = await getKV(uid, kGoals(uid), []);
+  const gl = goals.map(g => ({ name: g.name, ...goalProgress(g, today) }));
   const blocks = await sb(`blocks?select=type,eur_value,value&user_id=eq.${uid}&deleted=eq.false`) || [];
   const LABEL = { bolsa: 'Bolsa', fondos: 'Fondos', pe: 'Private equity', cash: 'Efectivo', inmobiliario: 'Inmobiliario', otros: 'Otros' };
   const byType = {};
-  blocks.forEach(x => { const c = Math.round(Number(x.eur_value || x.value || 0) * 100); byType[x.type] = (byType[x.type] || 0) + c; });
+  blocks.forEach(x => { byType[x.type] = (byType[x.type] || 0) + C(x.eur_value || x.value); });
   const netWorth = Object.values(byType).reduce((a, c) => a + c, 0);
   const hist = await sb(`patrimonio_history?select=date,total&user_id=eq.${uid}&date=lt.${ym}-01&order=date.desc&limit=1`) || [];
-  const prevTotal = hist.length ? Math.round(Number(hist[0].total) * 100) : null;
-
-  const lines = [`*${monthName(ym)[0].toUpperCase() + monthName(ym).slice(1)}* · día ${day} de ${dim}`];
+  const prevTotal = hist.length ? C(hist[0].total) : null;
+  const mes = monthName(ym);
+  const lines = [`*${mes[0].toUpperCase() + mes.slice(1)}* · día ${day} de ${dim}`];
   if (netWorth) lines.push(`Patrimonio: ${eur(netWorth)}${prevTotal ? ` (${netWorth >= prevTotal ? '+' : '−'}${eur(Math.abs(netWorth - prevTotal))} desde fin de ${monthName(prevMonth(ym))})` : ''}`
     + ` · ${Object.entries(byType).filter(([, c]) => c > 0).sort((a, b) => b[1] - a[1]).map(([t, c]) => `${LABEL[t] || t} ${eur(c)}`).join(' · ')}`);
-  lines.push(`Gastos: ${eur(spent)}${income ? ` · Ingresos: ${eur(income)} · Balance: ${income >= spent ? '+' : ''}${eur(income - spent)}` : ''}`);
+  lines.push(`Gastos: ${eur(v.spent)}${v.income ? ` · Ingresos: ${eur(v.income)} · Balance: ${v.income >= v.spent ? '+' : ''}${eur(v.income - v.spent)}` : ''}`);
   if (limitTotal) lines.push(`Presupuesto: ${eur(spentBudgeted)} de ${eur(limitTotal)} en categorías con límite (${pct(spentBudgeted, limitTotal)}%)`);
-  const top = Object.entries(byCat).sort((a, b) => b[1] - a[1]).slice(0, 3);
-  if (top.length) lines.push(`Donde más: ${top.map(([c, v]) => `${c} ${eur(v)}`).join(' · ')}`);
-  for (const bdg of budgets) {
-    const s = byCat[bdg.category] || 0, l = Math.round(Number(bdg.monthly_limit) * 100);
-    if (s >= l * 0.8) lines.push(`${s >= l ? '🔴' : '🟠'} ${bdg.category}: ${eur(s)} de ${eur(l)} (${pct(s, l)}%)`);
-  }
-  for (const g of goalLines) {
+  const top = Object.entries(v.byCat).sort((a, b) => b[1] - a[1]).slice(0, 3);
+  if (top.length) lines.push(`Donde más: ${top.map(([c, x]) => `${c} ${eur(x)}`).join(' · ')}`);
+  for (const x of blist) if (x.spent >= x.limit * 0.8) lines.push(`${x.spent >= x.limit ? '🔴' : '🟠'} ${x.category}: ${eur(x.spent)} de ${eur(x.limit)} (${pct(x.spent, x.limit)}%)`);
+  for (const g of gl) {
     let t = `🎯 ${g.name}: ${eur(g.saved)} de ${eur(g.target)} (${pct(g.saved, g.target)}%)`;
     if (g.needMonthly !== null) t += g.thisMonth >= g.needMonthly ? ' · al día este mes' : ` · faltan ${eur(g.needMonthly - g.thisMonth)} este mes`;
     lines.push(t);
   }
-  return { message: lines.join('\n'), data: { month: ym, day, days_in_month: dim, spent: spent / 100, income: income / 100,
-    budgets: budgets.map(x => ({ category: x.category, limit: Number(x.monthly_limit), spent: (byCat[x.category] || 0) / 100 })), by_category: Object.fromEntries(Object.entries(byCat).map(([k, v]) => [k, v / 100])),
-    net_worth: netWorth / 100, net_worth_by_type: Object.fromEntries(Object.entries(byType).map(([k, v]) => [k, v / 100])),
-    goals: goalLines.map(g => ({ ...g, saved: g.saved / 100, target: g.target / 100, needMonthly: g.needMonthly === null ? null : g.needMonthly / 100, thisMonth: g.thisMonth / 100 })) } };
+  const E = (c) => c / 100;
+  return { message: lines.join('\n'), data: { month: ym, day, days_in_month: dim, spent: E(v.spent), income: E(v.income),
+    budgets: blist.map(x => ({ category: x.category, limit: E(x.limit), spent: E(x.spent) })),
+    by_category: Object.fromEntries(Object.entries(v.byCat).map(([k, x]) => [k, E(x)])),
+    net_worth: E(netWorth), net_worth_by_type: Object.fromEntries(Object.entries(byType).map(([k, x]) => [k, E(x)])),
+    goals: gl.map(g => ({ name: g.name, saved: E(g.saved), target: E(g.target), needMonthly: g.needMonthly === null ? null : E(g.needMonthly), thisMonth: E(g.thisMonth) })) } };
 }
 
 export async function computeAlerts(uid, today) {
   const ym = today.slice(0, 7), day = Number(today.slice(8, 10)), dim = daysInMonth(ym);
-  const rows = await monthMovements(uid, ym);
-  const byCat = {};
-  rows.filter(r => r.type === 'expense').forEach(r => { byCat[r.category] = (byCat[r.category] || 0) + Math.round(Number(r.amount) * 100); });
+  const data = await getExpenses(uid);
+  const v = monthView(data, today);
   const out = [];
-  const budgets = await sb(`budgets?select=category,monthly_limit&user_id=eq.${uid}`) || [];
-  for (const b of budgets) {
-    const s = byCat[b.category] || 0, l = Math.round(Number(b.monthly_limit) * 100);
-    if (s >= l) out.push({ key: `budget:${b.category}:${ym}:100`, level: 'alta', text: `🔴 Has superado el límite de ${b.category}: ${eur(s)} de ${eur(l)}.` });
-    else if (s >= l * 0.8) out.push({ key: `budget:${b.category}:${ym}:80`, level: 'media', text: `🟠 ${b.category} al ${pct(s, l)}%: ${eur(s)} de ${eur(l)}. Te quedan ${eur(l - s)} para ${dim - day} días.` });
+  const budgets = await getKV(uid, kBudgets(uid), {});
+  for (const [cat, l0] of Object.entries(budgets)) {
+    const l = C(l0); if (!l) continue;
+    const s = v.byCat[cat] || 0;
+    if (s >= l) out.push({ key: `budget:${cat}:${ym}:100`, level: 'alta', text: `🔴 Has superado el límite de ${cat}: ${eur(s)} de ${eur(l)}.` });
+    else if (s >= l * 0.8) out.push({ key: `budget:${cat}:${ym}:80`, level: 'media', text: `🟠 ${cat} al ${pct(s, l)}%: ${eur(s)} de ${eur(l)}. Te quedan ${eur(l - s)} para ${dim - day} días.` });
     else if (day >= 7 && Math.round(s / day * dim) > l)
-      out.push({ key: `pace:${b.category}:${ym}`, level: 'baja', text: `${b.category}: a este ritmo acabarías el mes en ${eur(Math.round(s / day * dim))}, por encima de tu límite de ${eur(l)}.` });
+      out.push({ key: `pace:${cat}:${ym}`, level: 'baja', text: `${cat}: a este ritmo acabarías el mes en ${eur(Math.round(s / day * dim))}, por encima de tu límite de ${eur(l)}.` });
   }
-  // Gasto total del mes frente a la media de los tres anteriores
+  // Gasto total frente a la media de los meses anteriores con datos (máximo 3)
   if (day >= 10) {
-    const spent = Object.values(byCat).reduce((a, c) => a + c, 0);
-    const prev = await sb(`movements?select=amount,date&user_id=eq.${uid}&deleted_at=is.null&type=eq.expense&date=gte.${prevMonth(ym, 3)}-01&date=lt.${ym}-01`) || [];
-    const months = new Set(prev.map(r => r.date.slice(0, 7)));
-    if (months.size >= 2) {
-      const avg = Math.round(sumCents(prev, () => true) / months.size);
-      const projected = Math.round(spent / day * dim);
+    const prevTotals = [1, 2, 3].map(n => { const pm = prevMonth(ym, n); return monthView(data, pm + '-15').spent; }).filter(x => x > 0);
+    if (prevTotals.length >= 2) {
+      const avg = Math.round(prevTotals.reduce((a, x) => a + x, 0) / prevTotals.length);
+      const projected = Math.round(v.spent / day * dim);
       if (projected > avg * 1.2) out.push({ key: `spend:${ym}:high`, level: 'media',
         text: `Este mes vas camino de gastar ${eur(projected)}, un ${pct(projected - avg, avg)}% más que tu media (${eur(avg)}).` });
     }
   }
-  // Objetivos de ahorro retrasados (a partir del día 20)
   if (day >= 20) {
-    const goals = await sb(`savings_goals?select=id,name,target,deadline&user_id=eq.${uid}&archived=eq.false`) || [];
+    const goals = await getKV(uid, kGoals(uid), []);
     for (const g of goals) {
-      const p = await goalProgress(uid, g, today);
+      const p = goalProgress(g, today);
       if (p.needMonthly && p.thisMonth < p.needMonthly)
-        out.push({ key: `goal:${g.id}:${ym}`, level: 'media', text: `🎯 "${g.name}": este mes llevas ${eur(p.thisMonth)} de ${eur(p.needMonthly)} necesarios. Te faltan ${eur(p.needMonthly - p.thisMonth)}.` });
+        out.push({ key: `goal:${g.id || g.name}:${ym}`, level: 'media', text: `🎯 "${g.name}": este mes llevas ${eur(p.thisMonth)} de ${eur(p.needMonthly)} necesarios. Te faltan ${eur(p.needMonthly - p.thisMonth)}.` });
     }
   }
   return out;
@@ -402,22 +443,38 @@ async function actAlerts(uid, b, today) {
   return ok(fresh.length ? fresh.map(a => a.text).join('\n') : 'Sin novedades.', { alerts: fresh, total_active: all.length });
 }
 
+// Deshace lo último que apuntó Instinct (gasto, ingreso o ahorro) en las últimas 24 h
 async function actUndo(uid, b) {
-  const since = new Date(Date.now() - 24 * 3600000).toISOString();
-  let path = `movements?select=id,type,amount,category,concept,date&user_id=eq.${uid}&source=eq.instinct&deleted_at=is.null&created_at=gte.${q(since)}&order=created_at.desc&limit=1`;
-  if (b.id) path = `movements?select=id,type,amount,category,concept,date&user_id=eq.${uid}&id=eq.${q(b.id)}&source=eq.instinct&deleted_at=is.null&created_at=gte.${q(since)}&limit=1`;
-  const rows = await sb(path) || [];
-  if (!rows.length) return ok('No hay nada que deshacer de las últimas 24 horas.', {});
-  const r = rows[0];
-  await sb(`movements?id=eq.${r.id}&user_id=eq.${uid}`, { method: 'PATCH', body: { deleted_at: new Date().toISOString() } });
-  return ok(`↩︎ Deshecho: ${eur(Math.round(Number(r.amount) * 100))}${r.category ? ` en ${r.category}` : ''}${r.concept ? ` (${r.concept})` : ''} del ${r.date}.`, { id: r.id });
+  const since = Date.now() - 24 * 3600000;
+  const data = await getExpenses(uid);
+  const goals = await getKV(uid, kGoals(uid), []);
+  const cands = [];
+  for (const [k, m] of Object.entries(data)) (m.items || []).forEach((i, idx) => {
+    if (i.source === 'instinct' && i.created_at && Date.parse(i.created_at) >= since && (!b.id || i.id === b.id)) cands.push({ kind: 'item', k, idx, at: Date.parse(i.created_at), x: i });
+  });
+  goals.forEach(g => (g.contribs || []).forEach((c, idx) => {
+    if (c.source === 'instinct' && c.created_at && Date.parse(c.created_at) >= since && (!b.id || c.id === b.id)) cands.push({ kind: 'contrib', g, idx, at: Date.parse(c.created_at), x: c });
+  }));
+  if (!cands.length) return ok('No hay nada que deshacer de las últimas 24 horas.', {});
+  const last = cands.sort((a, z) => z.at - a.at)[0];
+  if (last.kind === 'item') {
+    data[last.k].items.splice(last.idx, 1); recomputeMonth(data[last.k]); await putExpenses(uid, data);
+    return ok(`↩︎ Deshecho: ${eur(C(last.x.amount))}${last.x.isIncome ? ' de ingreso' : ` en ${last.x.category}`}${last.x.concept && last.x.concept !== last.x.category ? ` (${last.x.concept})` : ''} del ${last.x.date}.`, { id: last.x.id });
+  }
+  last.g.contribs.splice(last.idx, 1);
+  last.g.current = Math.round((C(last.g.current) - C(last.x.amount))) / 100;
+  await putKV(uid, kGoals(uid), goals);
+  return ok(`↩︎ Deshecho: ${eur(C(last.x.amount))} apartados para "${last.g.name}". Ahora llevas ${eur(C(last.g.current))}.`, { id: last.x.id });
 }
 
 async function actRecent(uid) {
-  const rows = await sb(`movements?select=date,type,amount,category,concept&user_id=eq.${uid}&deleted_at=is.null&order=created_at.desc&limit=8`) || [];
+  const data = await getExpenses(uid);
+  const all = [];
+  for (const m of Object.values(data)) (m.items || []).forEach(i => all.push(i));
+  all.sort((a, z) => String(z.created_at || z.date).localeCompare(String(a.created_at || a.date)));
+  const rows = all.slice(0, 8);
   if (!rows.length) return ok('Aún no hay movimientos.', { rows: [] });
-  const T = { expense: '−', income: '+', saving: '🎯', buy: 'Compra', sell: 'Venta' };
-  return ok(rows.map(r => `${r.date.slice(8, 10)}/${r.date.slice(5, 7)} ${T[r.type] || ''} ${eur(Math.round(Number(r.amount) * 100))} ${r.category || ''}${r.concept ? ` · ${r.concept}` : ''}`).join('\n'), { rows });
+  return ok(rows.map(i => `${String(i.date).slice(8, 10)}/${String(i.date).slice(5, 7)} ${i.isIncome ? '+' : '−'}${eur(C(i.amount))} ${i.category || ''}${i.concept && i.concept !== i.category ? ` · ${i.concept}` : ''}`).join('\n'), { rows });
 }
 
 const ok = (message, data) => ({ status: 200, body: { ok: true, message, data } });
@@ -436,8 +493,8 @@ export default async function handler(req, res) {
     const action = String(body.action || '').toLowerCase();
     const today = madridToday();
     const map = {
-      expense: () => actExpense(uid, body, today),
-      income: () => actIncome(uid, body, today),
+      expense: () => actItem(uid, body, today, false),
+      income: () => actItem(uid, body, today, true),
       set_budget: () => actSetBudget(uid, body, today),
       set_goal: () => actSetGoal(uid, body, today),
       save: () => actSave(uid, body, today),
