@@ -200,3 +200,18 @@ Pendiente:
   importe + tipo + concepto, y mueve el efectivo solo por filas nuevas. Antes llamaba a `saveBlock()` (lee el
   formulario) y el ajuste de saldo nunca se guardaba; ahora `saveBlockDB`.
 - Pruebas: 26 casos REST, 14 de regresión, importación real con SheetJS y borrado cruzado app → servidor.
+
+## Rediseño premium (20 oct 2026): `app.html`
+- Interfaz nueva en un archivo aparte; `index.html` sigue intacta como app clásica y pantalla de login.
+  Comparten la sesión de Supabase (clave de almacenamiento por defecto) y los mismos datos.
+- Cinco secciones: Inicio, Cartera, Inversiones privadas, Gastos, Noticias. Rutas por hash (#inicio…).
+  Barra lateral en escritorio, barra inferior en móvil. Gráficos SVG propios, sin librerías.
+- Datos reales: `blocks`, `patrimonio_history`, `user_expense_data`, `user_kv` (límites, objetivos,
+  `orbit_instinct_whatsapp`), `movements`, `pe_transactions`, `notifications_sent`, `instinct_tokens`.
+  Noticias vía `/api/news` (sin claves en la web). Si falta un dato, se muestra el estado y la acción.
+- Una sola recomendación por reglas (prioridad): límite superado → ritmo de gasto → private equity
+  incoherente → objetivo retrasado → satélites >10 % → falta cuenta de efectivo → todo en orden.
+- Instinct no es un chat: franja de actividad y botones que abren WhatsApp (`wa.me`) con el mensaje preparado.
+- Altas y borrados desde la app usan las mismas reglas de efectivo que la API (`extra.applied`, `balance_date`).
+- API 2.1: `GET /selftest` y `POST /selftest` para diagnosticar escrituras del asistente.
+- Pendiente: endpoint de pagos detectados + app compañera Android; alternativas iPhone; edición en la app nueva.
