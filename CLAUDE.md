@@ -215,3 +215,15 @@ Pendiente:
 - Altas y borrados desde la app usan las mismas reglas de efectivo que la API (`extra.applied`, `balance_date`).
 - API 2.1: `GET /selftest` y `POST /selftest` para diagnosticar escrituras del asistente.
 - Pendiente: endpoint de pagos detectados + app compañera Android; alternativas iPhone; edición en la app nueva.
+
+## Rediseño de index.html (20 oct 2026) — solo diseño
+- Petición: mantener TODA la funcionalidad (APIs de noticias, precios, Mentor, private equity…) y cambiar
+  solo el aspecto de index.html al estilo de app.html, más denso y con los datos grandes en Hoy.
+- Capa `<style id="theme-wealthos">` al final del body: redefine las variables (paleta bosque/salvia/crema/
+  lima, Geist para --display, --sans y --mono, radios, sombras, tintes) y reestiliza .sb, .ni, .top, .btn,
+  .card, .hero y la barra móvil. Al usar casi todo el HTML esas variables, el cambio llega a todas las pestañas.
+- Hoy: `.dash-top` = patrimonio protagonista (tarjeta bosque, gráfico bajo la cifra) + `renderDashTiles()`
+  (gastos del mes frente a límites, rentabilidad de inversiones, efectivo, colchón con tope "Más de 24").
+  El pulso semanal y "Qué está pasando hoy" pasan debajo. `renderDashBento` ya no pinta esas cifras.
+- Ningún cálculo nuevo: las cifras salen de computeInvestmentReturn, computeOrbitScore, loadBudgets,
+  expenseData y blocks. Verificado con capturas en Chromium (escritorio, móvil, Cartera, Gastos, Efectivo).
