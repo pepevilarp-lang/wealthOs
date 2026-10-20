@@ -1,6 +1,15 @@
 {
   "outputDirectory": ".",
   "crons": [
-    { "path": "/api/send-push", "schedule": "0 8 * * *" }
+    {
+      "path": "/api/send-push",
+      "schedule": "0 8 * * *"
+    }
+  ],
+  "rewrites": [
+    {
+      "source": "/api/instinct/:path*",
+      "destination": "/api/instinct?route=:path*"
+    }
   ]
 }
