@@ -174,3 +174,29 @@ Pendiente:
   que `uploadFileToStorage`) y noticias reales de las posiciones vía NewsAPI.
 - Borrados y archivos piden `confirm: true`. Búsqueda de activos por palabras del nombre; si hay empate,
   pregunta. Probado con los activos reales del usuario (25 casos) más regresión de gastos (10 casos).
+
+## Incidencia: compras de Instinct invisibles (6 oct 2026)
+- Causa 1: en GitHub seguía la primera versión de `api/instinct.js`, que escribía gastos y compras en
+  `movements` (tabla que la app no lee). Recuperación: acción `migrate_legacy` (idempotente,
+  `request_id: legacy:<id>`, marca lo recuperado como borrado). El historial nuevo de operaciones lleva
+  `category: 'cartera'` para no confundirse con lo antiguo.
+- Causa 2 probable del patrimonio a 0: la llave de Instinct asociada a un usuario distinto del de la app.
+  Pendiente de verificar en Supabase.
+- `recent` muestra gastos, compras/ventas y movimientos de private equity.
+
+## API v2 para el asistente (20 oct 2026) — contrato en docs/API.md
+- Causa de "puede leer pero no escribir": el último commit editó `instinct.js` en la RAÍZ del repo; Vercel
+  solo ejecuta `api/`. En producción seguía una versión antigua. Hay que borrar el `instinct.js` de la raíz.
+- Rutas REST vía reescritura en `vercel.json` (`/api/instinct/:path*` → `/api/instinct?route=`): GET month,
+  POST expenses/incomes, DELETE expenses/{id}, POST cash-balance, POST trades, POST trades/{id}/fill,
+  DELETE trades/{id}. `?_method=POST|DELETE` permite escribir por GET si el entorno no puede hacer POST.
+- Idempotencia por `id` en todas las escrituras. Sin `undo` global: se borra por id.
+- Efectivo: `extra.applied['item:<id>' | 'trade:<id>' | 'adjust:<id>']` registra lo aplicado (una vez,
+  reversible). `extra.balance_date`: lo anterior a esa fecha no mueve el saldo. Misma regla en la app.
+- Operaciones: dos de tres (qty, price, amount); órdenes pendientes en `extra.pending_orders` del bloque de
+  bolsa; la posición se registra al precio exacto pagado (coste medio con 6 decimales) para revertir exacto.
+- Ingresos: la nómina ya no se cuenta dos veces (campo `nomina` + movimiento). Igual en app y servidor.
+- Excel: fechas normalizadas (serie, DD/MM, MM/DD); la importación AÑADE sin pisar, deduplica por fecha +
+  importe + tipo + concepto, y mueve el efectivo solo por filas nuevas. Antes llamaba a `saveBlock()` (lee el
+  formulario) y el ajuste de saldo nunca se guardaba; ahora `saveBlockDB`.
+- Pruebas: 26 casos REST, 14 de regresión, importación real con SheetJS y borrado cruzado app → servidor.
