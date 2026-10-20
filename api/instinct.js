@@ -1301,6 +1301,42 @@ async function actMonth(uid, b0, today) {
   return ok(lines.join('\n'), { month: ym, totals: { spent: spent / 100, income: income / 100, balance: (income - spent) / 100 }, expenses, incomes, trades, pending_orders: pending, cash });
 }
 
+
+// ═══ Autodiagnóstico ═══════════════════════════════════════════════════════════
+// GET  /selftest → comprueba cada tabla, hace una escritura REAL de prueba (y la borra) y resume los datos.
+// POST /selftest → no escribe nada: solo confirma que el entorno del asistente puede enviar POST con cuerpo.
+const API_VERSION = '2.1';
+async function actSelftest(uid, req, body) {
+  const out = { version: API_VERSION, metodo_recibido: req.method, servidor: (SB_URL || '').replace(/^https?:\/\//, ''), usuario: uid.slice(0, 8) + '…', tablas: {}, escritura: null, datos: {} };
+  for (const t of ['blocks', 'user_expense_data', 'user_kv', 'movements', 'pe_transactions', 'notifications_sent', 'documents']) {
+    try { await sb(`${t}?select=user_id&user_id=eq.${uid}&limit=1`); out.tablas[t] = 'ok'; }
+    catch (e) { out.tablas[t] = `ERROR: ${e.message}`; }
+  }
+  const key = `orbit_selftest_${uid}`;
+  try {
+    await sb('user_kv?on_conflict=user_id,key', { method: 'POST', prefer: 'resolution=merge-duplicates,return=minimal',
+      body: { user_id: uid, key, value: new Date().toISOString(), deleted: false, updated_at: new Date().toISOString() } });
+    const back = await sb(`user_kv?select=value&user_id=eq.${uid}&key=eq.${q(key)}&limit=1`);
+    await sb(`user_kv?user_id=eq.${uid}&key=eq.${q(key)}`, { method: 'DELETE' });
+    out.escritura = back && back.length ? 'ok: el servidor puede escribir y borrar' : 'ERROR: se escribió pero no se pudo leer';
+  } catch (e) { out.escritura = `ERROR: ${e.message}`; }
+  try {
+    const blocks = await getBlocks(uid);
+    out.datos.activos = blocks.length;
+    out.datos.cuentas_efectivo = blocks.filter(b => b.type === 'cash').map(b => b.name);
+    out.datos.cuentas_bolsa = blocks.filter(b => b.type === 'bolsa').map(b => b.name);
+    out.datos.private_equity = blocks.filter(b => b.type === 'pe').map(b => b.name);
+  } catch (e) { out.datos.error = e.message; }
+  const fallos = Object.entries(out.tablas).filter(([, v]) => v !== 'ok').map(([k]) => k);
+  const lines = [`Orbit API ${API_VERSION} · servidor ${out.servidor}`];
+  lines.push(fallos.length ? `⚠ Tablas con problemas: ${fallos.join(', ')}` : '✓ Todas las tablas accesibles');
+  lines.push(String(out.escritura).startsWith('ok') ? '✓ El servidor puede escribir' : `⚠ Escritura: ${out.escritura}`);
+  lines.push(`Activos: ${out.datos.activos ?? '?'} · efectivo: ${(out.datos.cuentas_efectivo || []).join(', ') || 'ninguna'} · bolsa: ${(out.datos.cuentas_bolsa || []).join(', ') || 'ninguna'}`);
+  if (!(out.datos.cuentas_efectivo || []).length) lines.push('Falta una cuenta de efectivo: créala con add_asset {type:"efectivo"} para que los gastos descuenten.');
+  lines.push('Siguiente paso: llama a POST /selftest con cualquier cuerpo JSON. Si falla, tu entorno no puede enviar POST: usa GET con ?_method=POST.');
+  return ok(lines.join('\n'), out);
+}
+
 const ok = (message, data) => ({ status: 200, body: { ok: true, message: String(message).replace(/(?<!\.)\.\.(?!\.)/g, '.'), data } });
 const bad = (message) => ({ status: 400, body: { ok: false, message: String(message).replace(/(?<!\.)\.\.(?!\.)/g, '.') } });
 
@@ -1338,6 +1374,11 @@ export default async function handler(req, res) {
 
     if (parts.length) {
       const [r0, r1, r2x] = parts;
+      if (r0 === 'selftest' && method === 'GET') return send(await actSelftest(uid, req, body));
+      if (r0 === 'selftest') {
+        const via = req.method === 'GET' ? `GET con ?_method=${method}` : method;
+        return send(ok(`✓ La escritura funciona por ${via}. Campos recibidos: ${Object.keys(body).join(', ') || 'ninguno'}. ${req.method === 'GET' ? 'Usa esta misma forma (GET + _method=POST/DELETE) en /expenses, /trades y /cash-balance.' : 'Ya puedes usar POST /expenses, /trades y /cash-balance.'}`, { method, via, campos: Object.keys(body), version: API_VERSION }));
+      }
       if (r0 === 'month' && method === 'GET') return send(await actMonth(uid, body, today));
       if ((r0 === 'expenses' || r0 === 'incomes') && !r1 && method === 'POST') {
         if (!body.id) return send(bad('Necesito un "id" único por movimiento, para que nunca se duplique.'));
@@ -1392,11 +1433,12 @@ export default async function handler(req, res) {
       upload_document: () => actUploadDocument(uid, body),
       news: () => actNews(uid, body),
       migrate_legacy: () => actMigrateLegacy(uid, body, today),
+      selftest: () => actSelftest(uid, req, body),
     };
     if (action === 'undo' || action === 'delete_expense')
       return send(bad('Esta acción ya no existe: para borrar, usa DELETE /expenses/{id} (o action "delete_item" con el id). Los ids salen en GET /month.'));
     if (!map[action]) return send(bad(`Acción desconocida. Usa las rutas REST (GET /month, POST /expenses…) o una de: ${Object.keys(map).join(', ')}.`));
-    const READ = ['summary', 'alerts', 'recent', 'assets', 'pe_status', 'positions', 'news', 'month'];
+    const READ = ['summary', 'alerts', 'recent', 'assets', 'pe_status', 'positions', 'news', 'month', 'selftest'];
     if (method === 'GET' && !READ.includes(action)) return send(bad('Esta acción escribe: usa POST, o GET con _method=POST.'));
     return send(await map[action]());
   } catch (e) {
