@@ -1,4 +1,4 @@
-# Orbit · API para el asistente (v2)
+# Orbit · API para el asistente (v2.1)
 
 **Base:** `https://orbit-it-gamma.vercel.app/api/instinct`
 
@@ -24,6 +24,11 @@ petición con el mismo `id` no vuelve a apuntar ni a mover dinero: responde `"du
 - Un gasto o ingreso **de esa fecha o posterior** mueve el saldo **una sola vez**.
 - Uno **anterior** a esa fecha se registra, pero no mueve el saldo: ya está incluido en él.
 - Borrar un movimiento por `id` revierte exactamente lo que movió.
+
+## Primer paso: autodiagnóstico
+- `GET /selftest`: comprueba cada tabla, hace una escritura real de prueba (y la borra) y lista tus cuentas.
+- `POST /selftest` con cualquier cuerpo JSON: confirma que **tu entorno** puede enviar escrituras. No escribe nada.
+  Si falla, usa la vía GET con `?_method=POST` (ver más abajo) y repite: `GET /selftest?_method=POST&x=1`.
 
 ## Rutas
 
