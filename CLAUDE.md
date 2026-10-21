@@ -227,3 +227,14 @@ Pendiente:
   El pulso semanal y "Qué está pasando hoy" pasan debajo. `renderDashBento` ya no pinta esas cifras.
 - Ningún cálculo nuevo: las cifras salen de computeInvestmentReturn, computeOrbitScore, loadBudgets,
   expenseData y blocks. Verificado con capturas en Chromium (escritorio, móvil, Cartera, Gastos, Efectivo).
+
+## Tres vías de entrada sin POST desde Instinct (21 oct 2026)
+- El entorno de Instinct no puede hacer POST. Sus opciones preferidas: (1) hoja de Google, (2) formulario en la app.
+- Hoja: `docs/orbit-sheets.gs` (Apps Script). Empuja cada 5 min las filas nuevas a la API con la llave guardada en
+  las propiedades del script; columnas por nombre; añade ID/Estado/Mensaje Orbit; `BORRAR` en Estado elimina;
+  `REINTENTAR` en fallos pasajeros. Guía: `docs/HOJA-GOOGLE.md`. Probado con hoja simulada y la API por HTTP real.
+- Formulario `#m-mov` en index.html (botón "Movimiento", también el "+" del móvil): Gasto, Ingreso, Compra/venta,
+  Saldo. Llama a `/api/instinct?route=…` con el access_token de la sesión; un id por apertura (doble clic no duplica).
+- API 2.2: autenticación por sesión (JWT validado en `/auth/v1/user`), origen por petición con AsyncLocalStorage
+  (`instinct` | `sheet` | `app`), control de concurrencia optimista en `user_expense_data` y en el saldo de efectivo
+  (`updated_at` como versión, reintentos con espera creciente, 409 si se agotan). Probado con 10 escrituras simultáneas.
