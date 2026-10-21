@@ -15,6 +15,7 @@
 // Cada respuesta incluye `message`: texto listo para enviar por WhatsApp.
 
 import crypto from 'crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
 
 const SB_URL = process.env.SUPABASE_URL;
 const SERVICE = process.env.SUPABASE_SERVICE_ROLE;
@@ -134,15 +135,36 @@ async function sb(path, { method = 'GET', body, prefer } = {}) {
 }
 const q = encodeURIComponent;
 
+// Autenticación: (a) llave del asistente (hash en instinct_tokens) o (b) sesión de Supabase del usuario
+// conectado en la app (JWT), que se valida contra el propio servicio de autenticación de Supabase.
+// Contexto propio de cada petición: Vercel puede atender varias a la vez en la misma instancia
+const REQ = new AsyncLocalStorage();
+const via = () => (REQ.getStore() && REQ.getStore().via) || 'instinct';
+const setVia = (v) => { const st = REQ.getStore(); if (st) st.via = v; };
 async function authenticate(req) {
   const h = req.headers.authorization || req.headers.Authorization || '';
   const token = (h.startsWith('Bearer ') ? h.slice(7) : '').trim();
   if (!token || token.length < 32) return null;
+  if (token.split('.').length === 3) {
+    const r = await fetch(`${SB_URL}/auth/v1/user`, { headers: { apikey: SERVICE, Authorization: `Bearer ${token}` } });
+    if (!r.ok) return null;
+    const u = await r.json().catch(() => null);
+    if (!u || !u.id) return null;
+    setVia('session');
+    return u.id;
+  }
   const rows = await sb(`instinct_tokens?select=id,user_id&token_hash=eq.${sha256(token)}&revoked=eq.false&limit=1`);
   if (!rows || !rows.length) return null;
   await sb(`instinct_tokens?id=eq.${rows[0].id}`, { method: 'PATCH', body: { last_used_at: new Date().toISOString() } });
+  setVia('instinct');
   return rows[0].user_id;
 }
+// Origen de cada movimiento: la app (sesión), la hoja de Google (script) o Instinct
+function originOf(b) {
+  if (via() === 'session') return 'app';
+  return String((b && b.source) || '').toLowerCase() === 'sheet' ? 'sheet' : 'instinct';
+}
+const MOV_SOURCE = { app: 'manual', sheet: 'import', instinct: 'instinct' };   // valores admitidos por la tabla movements
 
 // ── almacenes de la app ─────────────────────────────────────────────────
 const SP = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
@@ -151,8 +173,31 @@ const kBudgets = (uid) => `wealth_budgets_${uid}`;
 const kGoals   = (uid) => `wealth_goals_legacy_${uid}`;
 
 async function getExpenses(uid) {
+  return (await getExpensesV(uid)).data;
+}
+// Lectura con versión (updated_at) para guardar con control de concurrencia
+async function getExpensesV(uid) {
   const r = await sb(`user_expense_data?select=data,updated_at&user_id=eq.${uid}&limit=1`);
-  return (r && r[0] && r[0].data && typeof r[0].data === 'object') ? r[0].data : {};
+  const row = r && r[0];
+  return { data: (row && row.data && typeof row.data === 'object') ? row.data : {}, ver: row ? row.updated_at : null };
+}
+// Guarda solo si nadie ha cambiado el documento desde que se leyó (si no, lanza CONFLICT)
+async function putExpensesIf(uid, data, ver) {
+  const now = new Date().toISOString();
+  if (!ver) {   // aún no existe: se crea (si otro lo creó a la vez, el insert falla y se reintenta)
+    try { await sb('user_expense_data', { method: 'POST', prefer: 'return=minimal', body: { user_id: uid, data, updated_at: now } }); return now; }
+    catch (e) { if (e.code === '23505' || e.status === 409) { const c = new Error('CONFLICT'); c.code = 'CONFLICT'; throw c; } throw e; }
+  }
+  const upd = await sb(`user_expense_data?user_id=eq.${uid}&updated_at=eq.${q(ver)}`, { method: 'PATCH', prefer: 'return=representation', body: { data, updated_at: now } });
+  if (!upd || !upd.length) { const c = new Error('CONFLICT'); c.code = 'CONFLICT'; throw c; }
+  return now;
+}
+// Ejecuta una modificación con reintentos ante escrituras simultáneas (hoja, app e Instinct a la vez)
+async function withExpenseRetry(fn) {
+  for (let i = 0; i < 8; i++) {
+    try { return await fn(); }
+    catch (e) { if (e.code !== 'CONFLICT' || i === 7) throw e; await new Promise(r => setTimeout(r, (30 + Math.random() * 90) * (i + 1))); }
+  }
 }
 async function putExpenses(uid, data) {
   await sb('user_expense_data?on_conflict=user_id', { method: 'POST', prefer: 'resolution=merge-duplicates,return=minimal',
@@ -245,7 +290,7 @@ function findGoal(goals, name) {
 // ── acciones ────────────────────────────────────────────────────────────
 async function addMovement(uid, row) {
   try {
-    const ins = await sb('movements', { method: 'POST', body: { user_id: uid, source: 'instinct', ...row }, prefer: 'return=representation' });
+    const ins = await sb('movements', { method: 'POST', body: { user_id: uid, source: MOV_SOURCE[via() === 'session' ? 'app' : 'instinct'], ...row }, prefer: 'return=representation' });
     return { row: ins[0], duplicate: false };
   } catch (e) {
     if (e.code === '23505' && row.request_id) {   // misma petición repetida: devolver la original
@@ -257,6 +302,9 @@ async function addMovement(uid, row) {
 }
 
 async function actItem(uid, b, today, isIncome) {
+  return withExpenseRetry(() => actItemOnce(uid, b, today, isIncome));
+}
+async function actItemOnce(uid, b, today, isIncome) {
   const cents = toCents(b.amount);
   if (!cents || cents <= 0 || cents > 10000000) return bad('Necesito un importe válido (por ejemplo, 45 o 45,50).');
   const date = parseDate(b.date, today);
@@ -265,7 +313,7 @@ async function actItem(uid, b, today, isIncome) {
   const id = String(b.id || b.request_id || '').slice(0, 100) || null;
   const category = isIncome ? (b.category && /n[oó]mina/i.test(b.category) ? 'Nómina' : 'Ingressos') : resolveCategory(b.category, b.concept);
   const concept = String(b.concept || '').slice(0, 80) || (isIncome ? 'Ingreso' : category);
-  const data = await getExpenses(uid);
+  const { data, ver } = await getExpensesV(uid);
   // Idempotencia: el mismo id nunca se apunta ni descuenta dos veces
   let found = null;
   if (id) for (const [k, m] of Object.entries(data)) { const it = (m.items || []).find(i => i.id === id || i.request_id === id); if (it) { found = { k, it }; break; } }
@@ -284,15 +332,15 @@ async function actItem(uid, b, today, isIncome) {
   const m = ensureMonth(data, date);
   const info = catInfo(category);
   const item = { id: id || crypto.randomUUID(), concept, amount: cents / 100, isIncome, category,
-    icon: isIncome ? '💶' : info.icon, color: isIncome ? 'var(--pos)' : info.color, date, source: 'instinct',
+    icon: isIncome ? '💶' : info.icon, color: isIncome ? 'var(--pos)' : info.color, date, source: originOf(b),
     created_at: new Date().toISOString(), request_id: id, cash_applied: false };
   if (acct.b) { item.account_id = acct.b.id; item.account_name = acct.b.name; }
   m.items.push(item);
   recomputeMonth(m);
-  await putExpenses(uid, data);                         // 1º el movimiento
+  const ver2 = await putExpensesIf(uid, data, ver);     // 1º el movimiento (solo si nadie lo cambió a la vez)
   if (affect && acct.b) {                                // 2º el saldo, una sola vez
     cashR = await applyCash(uid, acct.b.id, `item:${item.id}`, isIncome ? cents : -cents, date);
-    if (cashR.applied) { item.cash_applied = true; await putExpenses(uid, data); }
+    if (cashR.applied) { item.cash_applied = true; try { await putExpensesIf(uid, data, ver2); } catch (e) { if (e.code !== 'CONFLICT') throw e; } }
     cashNote = cashLine(cashR, acct.b.name);
   } else if (affect && acct.note) cashNote = ' ' + acct.note;
   const v = monthView(data, today), when = date === today ? 'hoy' : date;
@@ -309,13 +357,16 @@ async function actItem(uid, b, today, isIncome) {
 // Borra un gasto o ingreso por su id y revierte el saldo si se había aplicado
 async function actDeleteItemById(uid, id) {
   if (!id) return bad('Necesito el id del movimiento. Lo tienes en GET /month.');
-  const data = await getExpenses(uid);
+  return withExpenseRetry(() => actDeleteItemOnce(uid, id));
+}
+async function actDeleteItemOnce(uid, id) {
+  const { data, ver } = await getExpensesV(uid);
   for (const [k, m] of Object.entries(data)) {
     const idx = (m.items || []).findIndex(i => i.id === id);
     if (idx < 0) continue;
     const it = m.items[idx];
     m.items.splice(idx, 1); recomputeMonth(m);
-    await putExpenses(uid, data);
+    await putExpensesIf(uid, data, ver);
     let r = null;
     if (it.account_id) r = await revertCash(uid, it.account_id, `item:${it.id}`);
     return ok(`✓ Borrado (${id}): ${eur(C(it.amount))} · ${it.concept} · ${it.date}.${r && r.reverted ? ` Saldo de ${it.account_name}: ${eur(r.before)} → ${eur(r.after)}.` : ''}`,
@@ -841,7 +892,7 @@ async function actTradeBolsa(uid, b0, today, type) {
   await recalcBolsa(b);
   await saveBlockRow(b);
   try { await addMovement(uid, { type, date, amount: r2((type === 'buy' ? qty * price + feeC / 100 : qty * price - feeC / 100)), ticker: ticker || null, isin, qty, price, currency: ccy,
-    category: 'cartera', concept: `${type === 'buy' ? 'Compra' : 'Venta'} ${ticker || isin}`, request_id: b0.request_id || null }); } catch (e) { console.error('[instinct] historial de operaciones:', e); }
+    category: 'cartera', source: MOV_SOURCE[originOf(b0)], concept: `${type === 'buy' ? 'Compra' : 'Venta'} ${ticker || isin}`, request_id: b0.request_id || null }); } catch (e) { console.error('[instinct] historial de operaciones:', e); }
   return ok(`${msg} Valor de ${b.name}: ${eur(C(b.eur_value))}.`, { account: b.name, value: Number(b.eur_value) });
 }
 
@@ -1089,28 +1140,51 @@ async function resolveCash(uid, account) {
   if (cashBlocks.length === 1) return { b: cashBlocks[0] };
   return { b: null, note: cashBlocks.length ? `No he movido ningún saldo: indica la cuenta (${cashBlocks.map(x => x.name).join(' · ')}).` : 'No he movido ningún saldo: no tienes cuentas de efectivo.' };
 }
+// Actualiza el saldo solo si la cuenta no ha cambiado desde que se leyó (control por updated_at);
+// si otra petición la cambió a la vez, se relee y se reintenta. Así dos gastos simultáneos descuentan los dos.
+async function casBlock(uid, blockId, mutate) {
+  for (let i = 0; i < 6; i++) {
+    const rows = await sb(`blocks?select=*&id=eq.${q(blockId)}&user_id=eq.${uid}&limit=1`);
+    const b = rows && rows[0]; if (!b) return { missing: true };
+    b.extra = b.extra || {};
+    const ver = b.updated_at || null;
+    const out = mutate(b);
+    if (!out || !out.changed) return { b, ...out };
+    const now = new Date(Date.now() + i).toISOString();
+    const filt = ver ? `updated_at=eq.${q(ver)}` : 'updated_at=is.null';
+    const upd = await sb(`blocks?id=eq.${q(blockId)}&user_id=eq.${uid}&${filt}`, { method: 'PATCH', prefer: 'return=representation',
+      body: { value: b.value, eur_value: b.eur_value, extra: b.extra, updated_at: now } });
+    if (upd && upd.length) return { b: upd[0], ...out };
+    await new Promise(r => setTimeout(r, 30 + Math.random() * 90));
+  }
+  throw new Error('La cuenta de efectivo está recibiendo muchos cambios a la vez; inténtalo de nuevo en unos segundos.');
+}
 async function applyCash(uid, blockId, key, deltaCents, date) {
-  const rows = await sb(`blocks?select=*&id=eq.${q(blockId)}&user_id=eq.${uid}&limit=1`);
-  const b = rows && rows[0]; if (!b) return { applied: false, reason: 'cuenta no encontrada' };
-  b.extra = b.extra || {}; b.extra.applied = b.extra.applied || {};
-  const before = C(b.eur_value ?? b.value);
-  if (b.extra.applied[key] !== undefined) return { applied: false, reason: 'ya aplicado', before, after: before, b };
-  if (b.extra.balance_date && date && date < b.extra.balance_date)
-    return { applied: false, reason: `incluido en el saldo fijado el ${b.extra.balance_date}`, before, after: before, b };
-  const after = before + deltaCents;
-  b.value = b.eur_value = after / 100;
-  b.extra.applied[key] = { delta: deltaCents / 100, date, at: new Date().toISOString() };
-  await saveBlockRow(b);
-  return { applied: true, before, after, b };
+  const r = await casBlock(uid, blockId, (b) => {
+    b.extra.applied = b.extra.applied || {};
+    const before = C(b.eur_value ?? b.value);
+    if (b.extra.applied[key] !== undefined) return { changed: false, applied: false, reason: 'ya aplicado', before, after: before };
+    if (b.extra.balance_date && date && date < b.extra.balance_date)
+      return { changed: false, applied: false, reason: `incluido en el saldo fijado el ${b.extra.balance_date}`, before, after: before };
+    const after = before + deltaCents;
+    b.value = b.eur_value = after / 100;
+    b.extra.applied[key] = { delta: deltaCents / 100, date, at: new Date().toISOString() };
+    return { changed: true, applied: true, before, after };
+  });
+  if (r.missing) return { applied: false, reason: 'cuenta no encontrada' };
+  return r;
 }
 async function revertCash(uid, blockId, key) {
-  const rows = await sb(`blocks?select=*&id=eq.${q(blockId)}&user_id=eq.${uid}&limit=1`);
-  const b = rows && rows[0]; if (!b || !b.extra || !b.extra.applied || b.extra.applied[key] === undefined) return { reverted: false };
-  const before = C(b.eur_value ?? b.value), d = C(b.extra.applied[key].delta);
-  b.value = b.eur_value = (before - d) / 100;
-  delete b.extra.applied[key];
-  await saveBlockRow(b);
-  return { reverted: true, before, after: before - d, b };
+  const r = await casBlock(uid, blockId, (b) => {
+    const ap = b.extra.applied && b.extra.applied[key];
+    if (ap === undefined) return { changed: false, reverted: false };
+    const before = C(b.eur_value ?? b.value), d = C(ap.delta);
+    b.value = b.eur_value = (before - d) / 100;
+    delete b.extra.applied[key];
+    return { changed: true, reverted: true, before, after: before - d };
+  });
+  if (r.missing) return { reverted: false };
+  return r;
 }
 function cashLine(r, name) {
   if (!r) return '';
@@ -1305,7 +1379,7 @@ async function actMonth(uid, b0, today) {
 // ═══ Autodiagnóstico ═══════════════════════════════════════════════════════════
 // GET  /selftest → comprueba cada tabla, hace una escritura REAL de prueba (y la borra) y resume los datos.
 // POST /selftest → no escribe nada: solo confirma que el entorno del asistente puede enviar POST con cuerpo.
-const API_VERSION = '2.1';
+const API_VERSION = '2.2';
 async function actSelftest(uid, req, body) {
   const out = { version: API_VERSION, metodo_recibido: req.method, servidor: (SB_URL || '').replace(/^https?:\/\//, ''), usuario: uid.slice(0, 8) + '…', tablas: {}, escritura: null, datos: {} };
   for (const t of ['blocks', 'user_expense_data', 'user_kv', 'movements', 'pe_transactions', 'notifications_sent', 'documents']) {
@@ -1349,7 +1423,10 @@ function parseBody(req) {
   }
   return {};
 }
-export default async function handler(req, res) {
+export default function handler(req, res) {
+  return REQ.run({ via: 'instinct' }, () => handleRequest(req, res));
+}
+async function handleRequest(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
@@ -1442,6 +1519,8 @@ export default async function handler(req, res) {
     if (method === 'GET' && !READ.includes(action)) return send(bad('Esta acción escribe: usa POST, o GET con _method=POST.'));
     return send(await map[action]());
   } catch (e) {
+    if (e.code === 'CONFLICT') return res.status(409).json({ ok: false, retry: true,
+      message: 'Se estaban guardando otros movimientos a la vez. Vuelve a enviarlo con el mismo id: no se duplicará.' });
     console.error('[instinct]', e);
     return res.status(500).json({ ok: false, message: 'Error del servidor. Antes de repetir, consulta GET /month para ver si llegó a guardarse.', error: e.message });
   }
