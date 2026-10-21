@@ -238,3 +238,13 @@ Pendiente:
 - API 2.2: autenticación por sesión (JWT validado en `/auth/v1/user`), origen por petición con AsyncLocalStorage
   (`instinct` | `sheet` | `app`), control de concurrencia optimista en `user_expense_data` y en el saldo de efectivo
   (`updated_at` como versión, reintentos con espera creciente, 409 si se agotan). Probado con 10 escrituras simultáneas.
+
+## Objetivo de ahorro como presupuesto de gasto (21 oct 2026)
+- `spendPlan()`: objetivo (p. ej. 85 %) × nómina de referencia ⇒ gasto permitido del mes (15 %), lo que queda, € al día,
+  ritmo de hoy (permitido × día/días del mes), proyección a fin de mes y estado (bien / rápido / te has pasado).
+- Nómina de referencia en `wealth_nomina_ref_<uid>` (sincronizada vía user_kv): el cálculo no depende de que la nómina
+  del mes esté apuntada. Si no hay nómina guardada, usa los ingresos registrados del mes.
+- `renderSavingsTarget` rehecho (antes usaba el último mes con datos y los ingresos registrados, que podían ser 0);
+  editor admite hasta 95 % y pide la nómina. En Hoy, la primera cifra grande es "Te queda para gastar".
+- `feP()`: importes del plan con céntimos (15,50 €) y punto de miles (1.890 €).
+- Nómina y "Para ahorrar" ocultas por defecto (`.sec-hidden`, `•••• €`); el ojo (`toggleNominaVisible`) las muestra solo durante la sesión (`window._nominaVisible`).
