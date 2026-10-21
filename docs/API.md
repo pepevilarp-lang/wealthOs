@@ -1,4 +1,4 @@
-# Orbit · API para el asistente (v2.1)
+# Orbit · API para el asistente (v2.2)
 
 **Base:** `https://orbit-it-gamma.vercel.app/api/instinct`
 
@@ -11,9 +11,19 @@ Authorization: Bearer <token>
 
 El token nunca va en la URL. Sin cabecera o con un token revocado: `401`.
 
+Desde la app, el formulario "Movimiento" usa esta misma API con la sesión del usuario (`Authorization: Bearer
+<access_token de Supabase>`). El servidor la valida contra Supabase Auth.
+
+## Vías de entrada (todas pasan por las mismas reglas)
+| Vía | Cómo se autentica | Origen guardado |
+|---|---|---|
+| Instinct por API | llave en la cabecera | `instinct` |
+| Hoja de Google (`docs/orbit-sheets.gs`) | llave guardada en el script, `source: "sheet"` | `sheet` |
+| Formulario de la app | sesión de Supabase | `app` |
+
 ## Respuestas
 Siempre JSON: `{ "ok": true|false, "message": "texto para el usuario", "data": { ... } }`.
-Códigos: `200` correcto · `400` datos inválidos (el `message` dice qué falta) · `401` token · `404` ruta · `500` error del servidor (consultar `GET /month` antes de repetir).
+Códigos: `200` correcto · `400` datos inválidos (el `message` dice qué falta) · `401` token · `404` ruta · `409` se estaban guardando otros movimientos a la vez: reenviar con el mismo `id` · `500` error del servidor (consultar `GET /month` antes de repetir).
 
 ## Idempotencia
 Toda escritura lleva un **`id` único** generado por el asistente (por ejemplo un UUID). Repetir la misma
