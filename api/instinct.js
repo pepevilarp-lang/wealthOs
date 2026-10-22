@@ -162,7 +162,8 @@ async function authenticate(req) {
 // Origen de cada movimiento: la app (sesión), la hoja de Google (script) o Instinct
 function originOf(b) {
   if (via() === 'session') return 'app';
-  return String((b && b.source) || '').toLowerCase() === 'sheet' ? 'sheet' : 'instinct';
+  const src = String((b && b.source) || '').toLowerCase();
+  return src === 'sheet' ? 'sheet' : src === 'siri' ? 'siri' : 'instinct';
 }
 const MOV_SOURCE = { app: 'manual', sheet: 'import', instinct: 'instinct' };   // valores admitidos por la tabla movements
 
@@ -1411,6 +1412,143 @@ async function actSelftest(uid, req, body) {
   return ok(lines.join('\n'), out);
 }
 
+// ═══ Siri / Atajos ═══════════════════════════════════════════════════════════
+// Lo usa /api/quick-expense: registra el gasto al instante con las mismas reglas que el resto
+// (efectivo una sola vez, control de concurrencia). El id se deriva del contenido y del minuto, de modo
+// que si el atajo envía dos veces lo mismo seguido, solo se apunta una vez.
+export async function recordQuickExpense(uid, { amount, category, note, account, date }) {
+  return REQ.run({ via: 'instinct' }, async () => {
+    const cents = toCents(amount);
+    const minute = new Date().toISOString().slice(0, 16);
+    const id = 'siri-' + sha256(`${uid}|${cents}|${norm(category)}|${norm(note)}|${minute}`).slice(0, 24);
+    const r = await actItem(uid, { id, amount, category, concept: note || category, account, date, source: 'siri' }, madridToday(), false);
+    return { status: r.status, body: r.body };
+  });
+}
+
+
+// ═══ Noticias del día: la MISMA selección que "Qué está pasando hoy" de Orbit ════════════════
+// La app guarda su selección diaria en user_kv (clave wealthos_insights_<usuario>_<fecha UTC>). Si a la hora de
+// pedirla aún no existe, el servidor la genera con el mismo método que la app (Finnhub por posición + generales,
+// la IA explica "por qué te afecta") y la guarda con la misma clave, para que la app muestre exactamente la misma.
+const INS_TTL = 12 * 3600000;
+const insightsKey = (uid, d) => `wealthos_insights_${uid}_${d}`;
+const utcDay = (offsetDays = 0) => new Date(Date.now() + offsetDays * 86400000).toISOString().slice(0, 10);
+function holdingsOf(blocks) {        // = getHoldings() de la app
+  const live = blocks.filter(b => !b.deleted);
+  const tot = live.reduce((a, b) => a + (Number(b.eur_value || b.value) || 0), 0);
+  const hold = [];
+  for (const b of live) {
+    const pos = (b.extra && b.extra.positions) || [];
+    if (b.type === 'bolsa' && pos.length) pos.forEach(p => { const v = Number(p.value) || 0; if (v > 0) hold.push({ ticker: String(p.ticker || '').toUpperCase(), name: p.name || p.ticker || '', value: v }); });
+    else hold.push({ ticker: '', name: b.name || b.type, value: Number(b.eur_value || b.value) || 0 });
+  }
+  return { tot, hold };
+}
+function groundOf(insight, H) {       // = groundInsight() de la app
+  const tks = (insight.tickers_affected || []).map(t => String(t || '').toUpperCase().trim()).filter(t => t && t !== 'MACRO');
+  const matched = [];
+  H.hold.forEach(h => { if (tks.some(tk => tk && (h.ticker === tk || (h.ticker && h.ticker.startsWith(tk)) || (h.name && h.name.toUpperCase().includes(tk)))))
+    matched.push({ label: h.ticker || h.name, pct: H.tot ? +(h.value / H.tot * 100).toFixed(1) : 0 }); });
+  return matched;
+}
+function topInsights(insights, H, n = 3) {   // = orden de renderComprehensionHero
+  return insights.map((i, idx) => ({ i, idx, m: groundOf(i, H) })).sort((a, z) => (z.m.length - a.m.length) || (a.idx - z.idx)).slice(0, n);
+}
+function assetClassOf(tk, name, type) {
+  if (/^(BTC|ETH|SOL|ADA|XRP|DOGE|BNB|DOT|AVAX|MATIC)$/.test(tk) || /bitcoin|ethereum|crypto/i.test(name || '')) return 'crypto';
+  if (String(type || '').toUpperCase() === 'ETF' || /\b(etf|ucits)\b|ishares|vanguard|amundi|xtrackers|spdr|lyxor|invesco/i.test(name || '')) return 'etf';
+  return 'equity';
+}
+async function generateInsights(uid, blocks) {
+  const FK = process.env.FINNHUB_KEY;
+  if (!FK) return { error: 'no_finnhub' };
+  const FB = 'https://finnhub.io/api/v1';
+  const usTickers = [], allTickers = []; let hasCrypto = false;
+  blocks.filter(b => !b.deleted && b.type === 'bolsa').forEach(b => ((b.extra && b.extra.positions) || []).forEach(p => {
+    if (!p.ticker || p.isRoboAdvisor) return;
+    const tk = String(p.ticker).toUpperCase().trim(); allTickers.push(tk);
+    const ac = assetClassOf(tk, p.name, p.type);
+    if (ac === 'crypto') { hasCrypto = true; return; }
+    const looksUS = /^[A-Z]{1,5}$/.test(tk) && !['SXRT','EUNM','VWCE','VUAA','EUNL','IWDA','SXR8'].includes(tk);
+    if (looksUS && ac !== 'etf') usTickers.push(tk);
+  }));
+  const from = utcDay(-5), to = utcDay(0);
+  const get = async (url, n, tag) => { try { const r = await fetch(url); if (!r.ok) return []; const a = await r.json(); return (Array.isArray(a) ? a : []).slice(0, n).map(x => ({ ...x, ...tag })); } catch { return []; } };
+  const parts = await Promise.all([
+    ...[...new Set(usTickers)].slice(0, 6).map(tk => get(`${FB}/company-news?symbol=${tk}&from=${from}&to=${to}&token=${FK}`, 4, { _ticker: tk })),
+    get(`${FB}/news?category=general&token=${FK}`, 12, { _ticker: null, _general: true }),
+    get(`${FB}/news?category=forex&token=${FK}`, 6, { _ticker: null, _forex: true }),
+    hasCrypto ? get(`${FB}/news?category=crypto&token=${FK}`, 3, { _ticker: 'BTC', _crypto: true }) : Promise.resolve([]),
+  ]);
+  const seen = new Set();
+  let raw = parts.flat().filter(a => { const k = a.id || a.headline; if (!a.headline || seen.has(k)) return false; seen.add(k); return true; });
+  if (!raw.length) return { error: 'sin_articulos' };
+  raw.sort((a, b) => { const sc = x => x._ticker && !x._general ? 0 : x._crypto ? 1 : 2; return sc(a) - sc(b); });
+  const sel = [...raw.filter(a => a._ticker && !a._general && !a._forex).slice(0, 6), ...raw.filter(a => a._general || a._crypto || a._forex).slice(0, 9)].slice(0, 14);
+  const insights = sel.map(a => { const isP = a._ticker && !a._general; return {
+    title: a.headline, source: a.source || 'Finnhub', url: a.url, date: a.datetime ? new Date(a.datetime * 1000).toISOString().slice(0, 10) : to,
+    summary: a.summary || '', image: a.image || null, impact: isP ? 'alto' : (a._crypto ? 'medio' : 'bajo'), why: '',
+    category: isP ? 'Tu posición' : (a._crypto ? 'Cripto' : 'Macro'), tickers_affected: a._ticker ? [a._ticker] : [] }; });
+  // La IA explica por qué afecta cada noticia real (mismas instrucciones que la app)
+  try {
+    const prof = await sb(`profiles?select=investment_experience&id=eq.${uid}&limit=1`).catch(() => []);
+    const lvl = (prof && prof[0] && prof[0].investment_experience) || 'principiante';
+    const list = insights.map((ins, i) => `${i}. [${ins.tickers_affected[0] || 'Macro'}] ${ins.title}${ins.summary ? ' — ' + ins.summary.slice(0, 180) : ''}`).join('\n');
+    const has = allTickers.length > 0 || hasCrypto;
+    const linea = has
+      ? `Un inversor de nivel ${lvl} tiene esta cartera: ${[...new Set(allTickers)].join(', ') || 'varios activos'}${hasCrypto ? ' + cripto (BTC)' : ''}.\n\nPara cada uno de estos artículos REALES (no los inventes, ya existen), escribe en 1-2 frases POR QUÉ le afecta o le interesa a este inversor concreto, conectándolo con sus posiciones cuando aplique. Si el artículo toca uno de SUS tickers, dilo explícitamente y en qué dirección (a favor / en contra / a vigilar).`
+      : `Un usuario de nivel ${lvl} todavía NO tiene ninguna posición — está empezando y quiere aprender a leer el mercado.\n\nPara cada uno de estos artículos REALES (no los inventes, ya existen), escribe en 1-2 frases POR QUÉ esta noticia importa y qué le enseña sobre cómo funcionan los mercados. NO digas que afecta a "tu cartera" (no tiene ninguna). Enfócalo como aprendizaje.`;
+    const prompt = `${linea} Lenguaje claro y sencillo, ajustado a su nivel.\n\nARTÍCULOS:\n${list}\n\nPara cada artículo añade también:\n- "tema": uno de [macro, tipos, geopolitica, mercados, tech, energia]\n- "clases": lista con las que apliquen de [acciones, etf, cripto] (puede ir vacía si es solo macro)\n- "dir": dirección del impacto para el inversor — uno de ["positivo","negativo","neutral"] (si no afecta a sus posiciones, "neutral")\n- "accion": en máximo 8 palabras, qué podría hacer o vigilar el usuario (ej. "Nada que hacer, solo contexto" o "Vigilar tu posición en NVDA"). Concreto y sin alarmismo.\n\nDevuelve EXACTAMENTE este JSON sin markdown:\n{"relevancia": [{"i": 0, "why": "texto", "tema": "macro", "clases": ["acciones"], "dir": "neutral", "accion": "..."}]}`;
+    const model = process.env.GROQ_MODEL_TEXT || 'openai/gpt-oss-120b';
+    const r = await fetch('https://api.groq.com/openai/v1/chat/completions', { method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${process.env.GROQ_API_KEY}` },
+      body: JSON.stringify({ model, max_tokens: 2000, reasoning_effort: 'low', include_reasoning: false, messages: [{ role: 'user', content: prompt }] }) });
+    if (r.ok) {
+      const d = await r.json(); const txt = String(d?.choices?.[0]?.message?.content || '');
+      const m = txt.replace(/```json\s*|\s*```/g, '').trim().match(/\{[\s\S]*\}/);
+      if (m) (JSON.parse(m[0]).relevancia || []).forEach(it => { const ins = insights[it.i]; if (!ins) return;
+        if (it.why) ins.why = String(it.why).slice(0, 400);
+        if (['positivo', 'negativo', 'neutral'].includes(it.dir)) ins.dir = it.dir;
+        if (it.accion) ins.accion = String(it.accion).slice(0, 80);
+        if (it.tema) ins.tema = String(it.tema).slice(0, 20);
+        if (Array.isArray(it.clases)) ins.clases = it.clases.filter(c => ['acciones', 'etf', 'cripto'].includes(c)); });
+    }
+  } catch (e) { console.error('[noticias] explicación de la IA no disponible:', e.message); }
+  const key = insightsKey(uid, utcDay(0));
+  await putKV(uid, key, { ts: Date.now(), insights, origen: 'servidor' });
+  // Limpieza: solo se guardan los últimos 7 días
+  try { await sb(`user_kv?user_id=eq.${uid}&key=like.${q(`wealthos_insights_${uid}_*`)}&key=lt.${q(insightsKey(uid, utcDay(-7)))}`, { method: 'DELETE' }); } catch {}
+  return { insights };
+}
+async function actNewsToday(uid, b0) {
+  const blocks = await getBlocks(uid);
+  const H = holdingsOf(blocks);
+  let cached = await getKV(uid, insightsKey(uid, utcDay(0)), null);
+  let origin = 'orbit';
+  if (!cached || !Array.isArray(cached.insights) || !cached.insights.length || (Date.now() - (cached.ts || 0) > INS_TTL) || b0.refresh) {
+    const g = await generateInsights(uid, blocks);
+    if (g.error === 'no_finnhub') {
+      if (cached && cached.insights && cached.insights.length) origin = 'orbit-anterior';
+      else return ok('Aún no hay noticias de hoy en Orbit. Abre la app una vez (Noticias) o añade FINNHUB_KEY en Vercel para que el servidor las prepare solo.', { articles: [], origin: 'ninguno' });
+    } else if (g.error) {
+      if (!(cached && cached.insights && cached.insights.length)) return ok('Hoy no hay noticias relevantes de tus posiciones.', { articles: [] });
+    } else { cached = { insights: g.insights }; origin = 'servidor'; }
+  }
+  const top = topInsights(cached.insights, H, Math.min(5, Number(b0.limit) || 3));
+  const DIR = { positivo: '🟢', negativo: '🔴', neutral: '⚪' };
+  const lines = ['📰 *Lo que más afecta hoy a tu cartera*'];
+  top.forEach((t, n) => {
+    const i = t.i;
+    lines.push(`\n${n + 1}. ${DIR[i.dir] || '•'} *${i.title}*`);
+    if (t.m.length) lines.push(`   Te afecta: ${t.m.map(x => `${x.label} (${String(x.pct).replace('.', ',')}% de tu patrimonio)`).join(', ')}`);
+    if (i.why) lines.push(`   ${i.why}`);
+    if (i.accion) lines.push(`   👉 ${i.accion}`);
+    lines.push(`   ${i.source || 'Fuente'} · ${i.url}`);
+  });
+  return ok(lines.join('\n'), { origin, articles: top.map(t => ({ title: t.i.title, url: t.i.url, source: t.i.source, date: t.i.date, why: t.i.why, accion: t.i.accion || null, dir: t.i.dir || null, affects: t.m })) });
+}
+
 const ok = (message, data) => ({ status: 200, body: { ok: true, message: String(message).replace(/(?<!\.)\.\.(?!\.)/g, '.'), data } });
 const bad = (message) => ({ status: 400, body: { ok: false, message: String(message).replace(/(?<!\.)\.\.(?!\.)/g, '.') } });
 
@@ -1470,7 +1608,8 @@ async function handleRequest(req, res) {
       if (r0 === 'positions' && method === 'GET') return send(await actPositions(uid, body));
       if (r0 === 'summary' && method === 'GET') { const s2 = await buildSummary(uid, today); return send(ok(s2.message, s2.data)); }
       if (r0 === 'alerts' && method === 'GET') return send(await actAlerts(uid, body, today));
-      return res.status(404).json({ ok: false, message: `Ruta no encontrada: ${method} /${route}. Rutas: GET month · POST expenses · POST incomes · DELETE expenses/{id} · POST trades · POST trades/{id}/fill · DELETE trades/{id} · POST cash-balance · GET assets · GET positions · GET summary · GET alerts.` });
+      if (r0 === 'news' && r1 === 'today' && method === 'GET') return send(await actNewsToday(uid, body));
+      return res.status(404).json({ ok: false, message: `Ruta no encontrada: ${method} /${route}. Rutas: GET month · GET news/today · POST expenses · POST incomes · DELETE expenses/{id} · POST trades · POST trades/{id}/fill · DELETE trades/{id} · POST cash-balance · GET assets · GET positions · GET summary · GET alerts.` });
     }
 
     // Interfaz por acciones (compatibilidad): { action, ... }
@@ -1509,13 +1648,14 @@ async function handleRequest(req, res) {
       edit_expense: () => actEditExpense(uid, body),
       upload_document: () => actUploadDocument(uid, body),
       news: () => actNews(uid, body),
+      news_today: () => actNewsToday(uid, body),
       migrate_legacy: () => actMigrateLegacy(uid, body, today),
       selftest: () => actSelftest(uid, req, body),
     };
     if (action === 'undo' || action === 'delete_expense')
       return send(bad('Esta acción ya no existe: para borrar, usa DELETE /expenses/{id} (o action "delete_item" con el id). Los ids salen en GET /month.'));
     if (!map[action]) return send(bad(`Acción desconocida. Usa las rutas REST (GET /month, POST /expenses…) o una de: ${Object.keys(map).join(', ')}.`));
-    const READ = ['summary', 'alerts', 'recent', 'assets', 'pe_status', 'positions', 'news', 'month', 'selftest'];
+    const READ = ['summary', 'alerts', 'recent', 'assets', 'pe_status', 'positions', 'news', 'news_today', 'month', 'selftest'];
     if (method === 'GET' && !READ.includes(action)) return send(bad('Esta acción escribe: usa POST, o GET con _method=POST.'));
     return send(await map[action]());
   } catch (e) {
