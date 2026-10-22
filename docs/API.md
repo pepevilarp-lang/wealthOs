@@ -2,6 +2,9 @@
 
 **Base:** `https://orbit-it-gamma.vercel.app/api/instinct`
 
+> **Importante:** en este despliegue la ruta va siempre como parámetro: `…/api/instinct?route=<ruta>`
+> (por ejemplo `?route=news/today` o `?route=expenses`). La forma con barras (`…/api/instinct/news/today`) da 404.
+
 ## Autenticación
 Todas las peticiones llevan la cabecera:
 
@@ -104,17 +107,18 @@ la guarda para que la app muestre exactamente la misma.
 Cada escritura admite la misma ruta por GET con `_method`, el token en la cabecera y los datos en la URL:
 
 ```
-GET /api/instinct/expenses?_method=POST&id=uuid&date=2026-10-20&concept=Café&amount=2.30&account=Openbank
-GET /api/instinct/expenses/{id}?_method=DELETE
+GET /api/instinct?route=expenses&_method=POST&id=uuid&date=2026-10-20&concept=Café&amount=2.30&account=Openbank
+GET /api/instinct?route=expenses/{id}&_method=DELETE
 ```
 
-## Si las rutas devuelven 404
-Las rutas `/api/instinct/<ruta>` dependen de la regla de `vercel.json`. La misma petición funciona siempre como
-`/api/instinct?route=<ruta>` (por ejemplo `?route=expenses` o `?route=trades/{id}/fill`).
+## Por qué `?route=`
+La forma con barras depende de una regla de reescritura de `vercel.json` que en este despliegue no se aplica (404).
+`?route=` llega directamente a la función y funciona siempre. Las rutas siguen llamándose igual: en todo este
+documento, `GET /month` significa `GET /api/instinct?route=month`.
 
 ## Ejemplo
 ```bash
-curl -X POST https://orbit-it-gamma.vercel.app/api/instinct/expenses \
+curl -X POST "https://orbit-it-gamma.vercel.app/api/instinct?route=expenses" \
   -H "Authorization: Bearer $ORBIT_TOKEN" -H "Content-Type: application/json" \
   -d '{"id":"7f3c…","date":"2026-10-20","concept":"Cena","amount":45.5,"category":"Restaurants","account":"Openbank"}'
 ```
