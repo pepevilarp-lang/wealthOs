@@ -90,6 +90,13 @@ Ejecuta una orden pendiente con los datos reales: `{ "price": 57.95 }` (o `qty`,
 Cancela una orden pendiente, o deshace una operación ejecutada (posición, coste medio y efectivo exactos).
 Solo se puede deshacer la última operación de cada ticker.
 
+### `GET /news/today`
+Las noticias que más afectan hoy a la cartera: **la misma selección y el mismo orden** que "Qué está pasando hoy" en
+Orbit (por número de posiciones afectadas). Devuelve un `message` listo para WhatsApp con el título, a qué posición
+afecta y su peso, por qué importa, qué vigilar y el enlace. `?limit=5` para más de tres; `?refresh=1` para regenerarla.
+Si la app aún no la ha preparado hoy, el servidor la genera con el mismo método (requiere `FINNHUB_KEY` en Vercel) y
+la guarda para que la app muestre exactamente la misma.
+
 ### Lectura
 `GET /assets` · `GET /positions` · `GET /summary` · `GET /alerts`
 
