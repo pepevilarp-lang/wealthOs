@@ -24,7 +24,13 @@ export default async function handler(req, res) {
     timestamp: new Date().toISOString(),
     vercel: { ok: true, region: process.env.VERCEL_REGION || 'unknown' },
     env: {
-      // Nunca devolver fragmentos de la clave: solo si está configurada.
+      // Nunca devolver fragmentos de ninguna clave: solo si está configurada.
+      SUPABASE_SERVICE_ROLE: process.env.SUPABASE_SERVICE_ROLE ? '✓ present' : '✗ falta (Siri, Instinct y la hoja no funcionarán)',
+      CRON_SECRET: process.env.CRON_SECRET ? '✓ present' : '✗ falta (el resumen diario no se envía)',
+      VAPID_PUBLIC: process.env.VAPID_PUBLIC ? '✓ present' : '✗ falta (no se pueden activar notificaciones)',
+      VAPID_PRIVATE: process.env.VAPID_PRIVATE ? '✓ present' : '✗ falta (no se pueden enviar notificaciones)',
+      NEWS_API_KEY: process.env.NEWS_API_KEY ? '✓ present' : '✗ falta (sin noticias)',
+      FINNHUB_KEY: process.env.FINNHUB_KEY ? '✓ present' : '✗ falta (el servidor no puede preparar las noticias del día si no abres la app)',
       GROQ_API_KEY: process.env.GROQ_API_KEY
         ? '✓ present'
         : '✗ MISSING — añade GROQ_API_KEY en Vercel Settings → Environment Variables',
