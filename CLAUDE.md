@@ -267,3 +267,4 @@ Pendiente:
   la genera con el mismo método de la app (Finnhub por posición US + generales + forex, misma instrucción a la IA) y la
   guarda con la misma clave; conserva 7 días. Requiere `FINNHUB_KEY` en Vercel. Verificado contra las funciones reales
   de la app: mismas 3 noticias y mismo orden.
+- 21 oct 2026: verificado en producción que `/api/instinct/<ruta>` da 404 (la reescritura de vercel.json no se aplica) y que `/api/instinct?route=<ruta>` funciona. Usar siempre `?route=`.
