@@ -248,3 +248,22 @@ Pendiente:
   editor admite hasta 95 % y pide la nómina. En Hoy, la primera cifra grande es "Te queda para gastar".
 - `feP()`: importes del plan con céntimos (15,50 €) y punto de miles (1.890 €).
 - Nómina y "Para ahorrar" ocultas por defecto (`.sec-hidden`, `•••• €`); el ojo (`toggleNominaVisible`) las muestra solo durante la sesión (`window._nominaVisible`).
+
+## Siri y notificaciones (21 oct 2026)
+- Siri: `/api/quick-expense` mantiene su formato ({token, amount, category, note}) pero ahora registra al instante vía
+  `recordQuickExpense` de instinct.js (efectivo una vez, concurrencia, origen `siri`). Id derivado de contenido + minuto:
+  un reenvío inmediato no duplica. Si falla, respaldo en `quick_expenses` (la app lo recoge al abrir). Acepta "45,50".
+  El token del atajo pertenecía a la cuenta borrada: hay que generar uno nuevo en Gastos → Siri / Atajos.
+- `getOrCreateQuickToken` y `enableDailyPush` ya comprueban el error de Supabase (antes decían "activado" sin guardar).
+- `push_subscriptions` no tenía las columnas name, tickers, pref_daily/weekly/alerts que guarda la app y que lee
+  send-push: `sql/003_siri_notificaciones.sql` las añade (idempotente). send-push filtra `pref_daily=not.is.false`.
+- `/api/health` informa (sin valores) de SUPABASE_SERVICE_ROLE, CRON_SECRET, VAPID_PUBLIC/PRIVATE y NEWS_API_KEY.
+
+## Noticias de la mañana de Instinct = selección de Orbit (21 oct 2026)
+- La selección diaria de la app (`loadDailyInsights`, clave `wealthos_insights_<uid>_<fecha UTC>`) se sincroniza con
+  user_kv (prefijo añadido a `KV_PREFIXES`).
+- `GET /api/instinct/news/today` (acción `news_today`): lee esa selección y la ordena igual que
+  `renderComprehensionHero` (`holdingsOf` = getHoldings, `groundOf` = groundInsight). Si no existe o tiene más de 12 h,
+  la genera con el mismo método de la app (Finnhub por posición US + generales + forex, misma instrucción a la IA) y la
+  guarda con la misma clave; conserva 7 días. Requiere `FINNHUB_KEY` en Vercel. Verificado contra las funciones reales
+  de la app: mismas 3 noticias y mismo orden.
