@@ -22,6 +22,19 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <script>
+// Fallar en voz alta (principio 3): ningún error se descarta en silencio. Los que no merecen aviso en pantalla
+// quedan en la consola con el sitio donde ocurrieron y en window.__orbitErrors (los 50 últimos).
+window.__orbitErrors = [];
+function _silenced(where, e){
+  try {
+    const msg = (e && (e.message || e.toString())) || String(e);
+    console.warn(`[Orbit] error en ${where}:`, e);
+    window.__orbitErrors.push({ where, msg: String(msg).slice(0, 300), at: new Date().toISOString() });
+    if (window.__orbitErrors.length > 50) window.__orbitErrors.shift();
+  } catch (_) { /* la consola no está disponible: no hay dónde informar */ }
+}
+</script>
+<script>
 if (typeof pdfjsLib !== 'undefined') {
   pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 }
@@ -752,7 +765,7 @@ img{transition:opacity .25s}
 (function(){
   var start = performance.now();
   var firstOpen = false;
-  try { var k='orbit_splash_seen'; firstOpen = !localStorage.getItem(k); localStorage.setItem(k,'1'); } catch(e){}
+  try { var k='orbit_splash_seen'; firstOpen = !localStorage.getItem(k); localStorage.setItem(k,'1'); } catch(e){ _silenced('_silenced', e); }
   var PERIOD = 1100;                       // = --orbit-period del CSS (una órbita completa)
   var MIN_MS = firstOpen ? 1400 : 900;     // una órbita y dentro — el splash no es una sala de espera
   var MAX_MS = 7000;                       // tope de seguridad: jamás dejar al usuario atrapado
@@ -1289,7 +1302,7 @@ async function fetchCryptoPrice(ticker) {
   try {
     const cached = JSON.parse(localStorage.getItem(cacheKey) || 'null');
     if (cached && Date.now() - cached.ts < PRICE_TTL) return cached;
-  } catch {}
+  } catch(_e){ _silenced('fetchCryptoPrice', _e); }
   try {
     const url = `https://api.coingecko.com/api/v3/simple/price?ids=${id}&vs_currencies=eur,usd`;
     const r = await fetch(url, { signal: AbortSignal.timeout(8000) });
@@ -1302,7 +1315,7 @@ async function fetchCryptoPrice(ticker) {
       name: base, currency: 'USD', source: 'coingecko',
       date: new Date().toISOString(), ts: Date.now()
     };
-    try { localStorage.setItem(cacheKey, JSON.stringify(result)); } catch {}
+    try { localStorage.setItem(cacheKey, JSON.stringify(result)); } catch(_e){ _silenced('fetchCryptoPrice', _e); }
     return result;
   } catch (e) {
     console.warn('[CoinGecko]', base, e.message);
@@ -1415,10 +1428,10 @@ function resolveTickerForCurrency(ticker, preferredCurrency, isin) {
 async function resolveByISIN(isin){
   const code=(isin||'').toUpperCase().trim(); if(!code) return null;
   if(ISIN_TICKER_MAP[code]) return Object.values(ISIN_TICKER_MAP[code])[0];
-  try{ const c=localStorage.getItem('wealthos_isin_'+code); if(c) return c; }catch(e){}
+  try{ const c=localStorage.getItem('wealthos_isin_'+code); if(c) return c; }catch(e){ _silenced('resolveByISIN', e); }
   try{
     const r=await fetch(`${FINNHUB_BASE}/search?q=${encodeURIComponent(code)}&token=${FINNHUB_KEY}`,{signal:AbortSignal.timeout(7000)});
-    if(r.ok){ const d=await r.json(); const hit=(d.result||[]).find(x=>x&&x.symbol); if(hit){ try{localStorage.setItem('wealthos_isin_'+code,hit.symbol);}catch(e){} console.log('[ISIN]',code,'→',hit.symbol); return hit.symbol; } }
+    if(r.ok){ const d=await r.json(); const hit=(d.result||[]).find(x=>x&&x.symbol); if(hit){ try{localStorage.setItem('wealthos_isin_'+code,hit.symbol);}catch(e){ _silenced('resolveByISIN', e); } console.log('[ISIN]',code,'→',hit.symbol); return hit.symbol; } }
   }catch(e){ console.warn('[ISIN] búsqueda falló',e.message); }
   return null;
 }
@@ -1590,14 +1603,14 @@ async function doUndo(){
       if (back.length) await _unmarkDeletedIds(back);
       expenseData = u.expense; await saveExpenseData?.();
     }
-    if(u.blocks){  blocks = u.blocks; for(const b of blocks){ try{ await saveBlockDB(b); }catch(e){} } }
+    if(u.blocks){  blocks = u.blocks; for(const b of blocks){ try{ await saveBlockDB(b); }catch(e){ _silenced('doUndo', e); } } }
     if(u.docs){    docs = u.docs; }
   }catch(e){ console.warn('[undo]', e); }
   toast('↩ Acción deshecha','info');
   // re-render de lo que toque
-  try{ renderFlujos?.(); }catch(e){}
-  try{ renderPatr?.(); }catch(e){}
-  try{ renderDash?.(); }catch(e){}
+  try{ renderFlujos?.(); }catch(e){ _silenced('doUndo', e); }
+  try{ renderPatr?.(); }catch(e){ _silenced('doUndo', e); }
+  try{ renderDash?.(); }catch(e){ _silenced('doUndo', e); }
 }
 window.doUndo = doUndo;
 
@@ -1639,8 +1652,8 @@ function initSB() {
         persistSession: true, autoRefreshToken: true, detectSessionInUrl: true,
         storage: {
           getItem: k => { try { return localStorage.getItem(k); } catch { return sessionStorage.getItem(k); } },
-          setItem: (k,v) => { try { localStorage.setItem(k,v); } catch { try { sessionStorage.setItem(k,v); } catch {} } },
-          removeItem: k => { try { localStorage.removeItem(k); } catch { try { sessionStorage.removeItem(k); } catch {} } },
+          setItem: (k,v) => { try { localStorage.setItem(k,v); } catch { try { sessionStorage.setItem(k,v); } catch(_e){ _silenced('setItem', _e); } } },
+          removeItem: k => { try { localStorage.removeItem(k); } catch { try { sessionStorage.removeItem(k); } catch(_e){ _silenced('setItem', _e); } } },
         }
       }
     });
@@ -1737,11 +1750,11 @@ async function signOut() {
   window._activeInsight = null;
   window._importPositions = null;
   window._importBlockId = null;
-  try { _alerts = []; document.getElementById('alerts-panel')?.remove(); ['bell-count','bell-count-mob'].forEach(id=>{const e=document.getElementById(id);if(e)e.style.display='none';}); } catch {}
+  try { _alerts = []; document.getElementById('alerts-panel')?.remove(); ['bell-count','bell-count-mob'].forEach(id=>{const e=document.getElementById(id);if(e)e.style.display='none';}); } catch(_e){ _silenced('signOut', _e); }
   // Limpiar caches en memoria
   _fxCache = null;
   // Limpiar marca de "último usuario" para que el próximo login dispare sanitize
-  try { localStorage.removeItem('wealthos_last_user_id'); } catch {}
+  try { localStorage.removeItem('wealthos_last_user_id'); } catch(_e){ _silenced('signOut', _e); }
   
   $('app').style.display='none';
   $('onb').style.display='none';
@@ -1775,16 +1788,16 @@ function _kvSynced(k){
   window._kvRawRem = (k) => oRem.call(window.localStorage, k);
   P.setItem = function(k, v){
     oSet.call(this, k, v);
-    try { if (this === window.localStorage && !_kvPulling && _kvSynced(String(k))) _kvTouch(String(k)); } catch(e){}
+    try { if (this === window.localStorage && !_kvPulling && _kvSynced(String(k))) _kvTouch(String(k)); } catch(e){ _silenced('_kvSynced', e); }
   };
   P.removeItem = function(k){
     oRem.call(this, k);
-    try { if (this === window.localStorage && !_kvPulling && _kvSynced(String(k))) _kvTouch(String(k)); } catch(e){}
+    try { if (this === window.localStorage && !_kvPulling && _kvSynced(String(k))) _kvTouch(String(k)); } catch(e){ _silenced('_kvSynced', e); }
   };
 })();
 function _kvTsKey(){ return 'orbit_kvts_' + (user?.id || 'anon'); }
 function _kvTs(){ try { return JSON.parse(localStorage.getItem(_kvTsKey()) || '{}'); } catch(e){ return {}; } }
-function _kvSaveTs(ts){ try { _kvRawSet(_kvTsKey(), JSON.stringify(ts)); } catch(e){} }
+function _kvSaveTs(ts){ try { _kvRawSet(_kvTsKey(), JSON.stringify(ts)); } catch(e){ _silenced('_kvSaveTs', e); } }
 function _kvTouch(k){
   const ts = _kvTs(); ts[k] = Date.now(); _kvSaveTs(ts);
   _kvPending.add(k);
@@ -1858,12 +1871,12 @@ async function refreshFromCloud(){
       q(sb.from('patrimonio_history').select('*').eq('user_id', user.id).order('date')),
     ]);
     blocks = sanitizeBlocks(nb); docs = sanitizeDocs(nd); txs = nt; history = nh;
-    for (const b of blocks) { try { if (recomputePE(b)) await saveBlockDB(b); } catch(e){} }
+    for (const b of blocks) { try { if (recomputePE(b)) await saveBlockDB(b); } catch(e){ _silenced('q', e); } }
     await kvSync();
-    try { await syncExpenseDataFromCloud(); } catch(e){}
-    try { renderSidebar(); renderDash(); } catch(e){}
-    document.querySelectorAll('[id^="detail-"]').forEach(el => { try { renderBlockDetail(el.id.slice(7)); } catch(e){} });
-    try { if (window._curPage === 'flujos') renderFlujos(); if (window._curPage === 'patrimonio') renderPatr(); if (window._curPage === 'docs') renderDocs(); } catch(e){}
+    try { await syncExpenseDataFromCloud(); } catch(e){ _silenced('q', e); }
+    try { renderSidebar(); renderDash(); } catch(e){ _silenced('q', e); }
+    document.querySelectorAll('[id^="detail-"]').forEach(el => { try { renderBlockDetail(el.id.slice(7)); } catch(e){ _silenced('q', e); } });
+    try { if (window._curPage === 'flujos') renderFlujos(); if (window._curPage === 'patrimonio') renderPatr(); if (window._curPage === 'docs') renderDocs(); } catch(e){ _silenced('q', e); }
   } catch(e) {
     console.error('[refresco] No se pudieron traer los datos de la nube:', e);
   } finally { _refreshing = false; }
@@ -1898,7 +1911,7 @@ async function loadAll() {
   for (const b of blocks) {
     try { if (recomputePE(b)) await saveBlockDB(b); } catch(e) { console.error('[PE] recalcular', b?.name, e); }
   }
-  try{ socialBoot(); }catch(e){}
+  try{ socialBoot(); }catch(e){ _silenced('safeLoad', e); }
 }
 
 function loadDemo() {
@@ -1935,7 +1948,7 @@ async function saveBlockDB(b) {
 
 async function deleteBlockDB(id) {
   if (demo) return;
-  try { await sb.from('blocks').update({deleted:true}).eq('id',id).eq('user_id',user.id); } catch {}
+  try { await sb.from('blocks').update({deleted:true}).eq('id',id).eq('user_id',user.id); } catch(_e){ _silenced('deleteBlockDB', _e); }
 }
 
 async function saveDocDB(doc) {
@@ -1993,7 +2006,7 @@ async function snapshot(silent=false) {
   if (idx>=0) history[idx]=entry; else history.push(entry);
   history.sort((a,b)=>a.date.localeCompare(b.date));
   if (!demo) {
-    try { await sb.from('patrimonio_history').upsert({user_id:user.id,...entry},{onConflict:'user_id,date'}); } catch {}
+    try { await sb.from('patrimonio_history').upsert({user_id:user.id,...entry},{onConflict:'user_id,date'}); } catch(_e){ _silenced('snapshot', _e); }
   }
   if (!silent) toast('Patrimonio actualizado');
 }
@@ -2004,7 +2017,7 @@ async function getProfile() {
 }
 async function saveProfile(u) {
   if (demo) return;
-  try { await sb.from('profiles').upsert({id:user.id,...u}); } catch {}
+  try { await sb.from('profiles').upsert({id:user.id,...u}); } catch(_e){ _silenced('saveProfile', _e); }
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -2048,12 +2061,12 @@ function sanitizeUserStorage() {
     }
     
     toRemove.forEach(k => {
-      try { localStorage.removeItem(k); console.log('[sanitize] Removed:', k); } catch {}
+      try { localStorage.removeItem(k); console.log('[sanitize] Removed:', k); } catch(_e){ _silenced('sanitizeUserStorage', _e); }
     });
   }
   
   // Marcar el usuario actual
-  try { localStorage.setItem('wealthos_last_user_id', uid); } catch {}
+  try { localStorage.setItem('wealthos_last_user_id', uid); } catch(_e){ _silenced('sanitizeUserStorage', _e); }
 }
 
 async function launchApp() {
@@ -2078,10 +2091,10 @@ async function launchApp() {
     // Datos del usuario que antes vivían solo en este navegador: se traen de la nube antes de usarlos
     try { await kvSync(); } catch(e) { console.error('[sincronización] arranque:', e); }
     // Deep-link desde notificación push: ?goto=insights → abre Noticias
-    try{ const _g=new URLSearchParams(location.search).get('goto'); if(_g){ setTimeout(()=>{ try{ goto(_g); }catch(e){} }, 500); history.replaceState({},'',location.pathname); } }catch(e){}
-    try{ pingSession(); }catch(e){}
+    try{ const _g=new URLSearchParams(location.search).get('goto'); if(_g){ setTimeout(()=>{ try{ goto(_g); }catch(e){ _silenced('launchApp', e); } }, 500); history.replaceState({},'',location.pathname); } }catch(e){ _silenced('launchApp', e); }
+    try{ pingSession(); }catch(e){ _silenced('launchApp', e); }
     // Muestra la pestaña Analytics solo al fundador
-    try{ const _adm=$('ni-admin'); if(_adm && user && (user.email||'').toLowerCase()==='pepevilarp@gmail.com') _adm.style.display=''; }catch(e){}
+    try{ const _adm=$('ni-admin'); if(_adm && user && (user.email||'').toLowerCase()==='pepevilarp@gmail.com') _adm.style.display=''; }catch(e){ _silenced('launchApp', e); }
     
     loadExpenseData();
     // En orden: primero traer de la nube, después aplicar los gastos rápidos (si no, uno pisa al otro)
@@ -2112,8 +2125,8 @@ function showApp() {
   $('auth').style.display='none';
   $('onb').style.display='none';
   $('app').style.display='flex';
-  if(window._tourPending){ window._tourPending=false; setTimeout(()=>{ try{ startOrbitTour(); }catch(e){} }, 1200); }
-  setTimeout(()=>{ try{ renderPushPromo(); }catch(e){} try{ renderCompleteAsset(); }catch(e){} }, 600);
+  if(window._tourPending){ window._tourPending=false; setTimeout(()=>{ try{ startOrbitTour(); }catch(e){ _silenced('showApp', e); } }, 1200); }
+  setTimeout(()=>{ try{ renderPushPromo(); }catch(e){ _silenced('showApp', e); } try{ renderCompleteAsset(); }catch(e){ _silenced('showApp', e); } }, 600);
   try { renderSidebar(); } catch(e){console.error(e)}
   try { renderDash(); } catch(e){console.error(e)}
   try { renderPatr(); } catch(e){console.error(e)}
@@ -2123,25 +2136,25 @@ function showApp() {
   try { renderInsights(); } catch(e){console.error(e)}
   try { initChat(); } catch(e){console.error(e)}
   snapshot(true);
-  setTimeout(()=>{ try{ syncPushTickers(); }catch(e){} }, 2000);
-  setTimeout(() => { try { seedHistoricalData(); } catch(e){} }, 500);
+  setTimeout(()=>{ try{ syncPushTickers(); }catch(e){ _silenced('showApp', e); } }, 2000);
+  setTimeout(() => { try { seedHistoricalData(); } catch(e){ _silenced('showApp', e); } }, 500);
   // Auto-updates (non-blocking)
-  setTimeout(() => { try { updateBolsaPrices(); } catch(e){} }, 1500);
+  setTimeout(() => { try { updateBolsaPrices(); } catch(e){ _silenced('showApp', e); } }, 1500);
   // Show bottom bar on mobile
   if (window.innerWidth <= 768) {
     const bb = document.getElementById('mob-bottom-bar');
     if (bb) bb.style.display = 'flex';
   }
-  setTimeout(() => { try { checkNominaReminder(); } catch(e){} }, 3000);
+  setTimeout(() => { try { checkNominaReminder(); } catch(e){ _silenced('showApp', e); } }, 3000);
   // Precios vivos: refresca cotizaciones en segundo plano al abrir
-  setTimeout(() => { try { refreshAllPrices(true); } catch(e){} }, 1500);
+  setTimeout(() => { try { refreshAllPrices(true); } catch(e){ _silenced('showApp', e); } }, 1500);
   // Popup inspiracional (de vez en cuando, más tarde para no competir con el arranque)
-  setTimeout(() => { try { checkInspoPopup(); } catch(e){} }, 12000);
+  setTimeout(() => { try { checkInspoPopup(); } catch(e){ _silenced('showApp', e); } }, 12000);
   // Cerebro de avisos: cargar caché al instante, regenerar en background
   try {
     loadAlertsCache();
     updateBellBadge();
-    setTimeout(() => { try { generateAlerts(true); } catch(e){} }, 4000);
+    setTimeout(() => { try { generateAlerts(true); } catch(e){ _silenced('showApp', e); } }, 4000);
   } catch(e) { console.warn('[alerts] init:', e); }
   // PWA: en iOS no hay beforeinstallprompt, mostrar banner manual
   try {
@@ -2149,7 +2162,7 @@ function showApp() {
     const standalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone;
     const dismissed = localStorage.getItem('wealthos_install_dismissed');
     if (isIOS && !standalone && !dismissed) setTimeout(showInstallBanner, 8000);
-  } catch {}
+  } catch(_e){ _silenced('showApp', _e); }
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -2383,7 +2396,7 @@ async function onbNext() {
     await saveProfile({investment_experience:onbData.level||'principiante',age_range:onbData.age||'',start_point:startPoint});
     // 3) Espejo en memoria: la personalización de la IA funciona ya en esta sesión, exista o no la columna en BD
     window._userProfile = {...(window._userProfile||{}), risk_profile:derivedRisk, investment_horizon:onbData.horizon||'medium', goal:onbData.goal||'growth', investment_experience:onbData.level||'principiante', age_range:onbData.age||'', start_point:startPoint, onboarding_completed:true};
-    try{ track('onboarding_completed', { goal:onbData.goal||null, horizon:onbData.horizon||null, level:onbData.level||null, age_range:onbData.age||null, start_point:startPoint, risk_derived:derivedRisk, asset_types:onbData.types||[] }); }catch(e){}
+    try{ track('onboarding_completed', { goal:onbData.goal||null, horizon:onbData.horizon||null, level:onbData.level||null, age_range:onbData.age||null, start_point:startPoint, risk_derived:derivedRisk, asset_types:onbData.types||[] }); }catch(e){ _silenced('onbNext', e); }
     window._tourPending = true; // el tour arranca al entrar de verdad en la app (showApp)
     // En vez de entrar directo → mostrar el preview wow
     onbPhase = 'preview';
@@ -2779,7 +2792,7 @@ async function renderAdmin(){
 window.renderAdmin = renderAdmin;
 
 function goto(page, el) {
-  try{ const _prev=window._curPage, _t0=window._pageT0; if(_prev&&_prev!==page&&_t0){ const _s=Math.min(1800,Math.round((Date.now()-_t0)/1000)); if(_s>=1) track('page_time',{page:_prev,secs:_s}); } window._curPage=page; window._pageT0=Date.now(); }catch(e){}
+  try{ const _prev=window._curPage, _t0=window._pageT0; if(_prev&&_prev!==page&&_t0){ const _s=Math.min(1800,Math.round((Date.now()-_t0)/1000)); if(_s>=1) track('page_time',{page:_prev,secs:_s}); } window._curPage=page; window._pageT0=Date.now(); }catch(e){ _silenced('goto', e); }
   window._activeStoryId = null; window._activeInsight = null;
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   document.querySelectorAll('.ni').forEach(n=>n.classList.remove('active'));
@@ -2788,8 +2801,8 @@ function goto(page, el) {
   if (el) el.classList.add('active');
   const meta = PAGE_TITLES[page] || {t:page,s:''};
   setText('top-h1', meta.t); setText('top-sub', meta.s); setText('mob-title', meta.t);
-  if (page === 'flujos') { syncQuickExpenses().then(()=>renderFlujos()); setTimeout(()=>{ try{ orbitCoach('gastos'); }catch(e){} }, 450); }
-  try{ if(!window._pvSeen[page]){ window._pvSeen[page]=1; track('page_view',{page}); } }catch(e){}
+  if (page === 'flujos') { syncQuickExpenses().then(()=>renderFlujos()); setTimeout(()=>{ try{ orbitCoach('gastos'); }catch(e){ _silenced('goto', e); } }, 450); }
+  try{ if(!window._pvSeen[page]){ window._pvSeen[page]=1; track('page_view',{page}); } }catch(e){ _silenced('goto', e); }
   if (page === 'documentos') renderDocs();
   if (page === 'reporting') renderReporting();
   if (page === 'insights') renderInsights();
@@ -2799,7 +2812,7 @@ function goto(page, el) {
   if (page === 'timeline') renderTimeline();
   if (page === 'performance') renderPerformance();
   if (page === 'admin') renderAdmin();
-  if (page === 'dashboard') setTimeout(()=>{ try{ renderPushPromo(); }catch(e){} try{ renderCompleteAsset(); }catch(e){} }, 250);
+  if (page === 'dashboard') setTimeout(()=>{ try{ renderPushPromo(); }catch(e){ _silenced('goto', e); } try{ renderCompleteAsset(); }catch(e){ _silenced('goto', e); } }, 250);
   renderCarteraTabs(page);
   renderBotNav();
 }
@@ -3019,7 +3032,7 @@ function renderDash() {
   if (blocks.filter(b=>!b.deleted).length > 0) {
     setTimeout(()=>{ drawLine('dash-line'); }, 30);
   }
-  setTimeout(() => { try { renderObjectives(); } catch(e){} }, 50);
+  setTimeout(() => { try { renderObjectives(); } catch(e){ _silenced('renderDash', e); } }, 50);
 }
 
 function drawDonut(byType, t, canvasId, legId) {
@@ -3305,7 +3318,7 @@ function renderBlockDetail(id) {
     const realVal = recalcBolsaValue(b);
     if ((b.eur_value || b.value || 0) !== realVal) {
       b.eur_value = realVal; b.value = realVal;
-      saveBlockDB(b).catch(() => {});
+      saveBlockDB(b).catch(_e => _silenced('renderBlockDetail', _e));
     }
   }
   const t = total();
@@ -3630,7 +3643,7 @@ function renderBolsaSection(b) {
   // Sincronizar el valor guardado si difiere (no bloqueante)
   if ((b.eur_value || b.value || 0) !== totalVal) {
     b.eur_value = totalVal; b.value = totalVal;
-    saveBlockDB(b).catch(() => {});
+    saveBlockDB(b).catch(_e => _silenced('renderBolsaSection', _e));
   }
   const bDocs = docs.filter(d => d.block_id == b.id);
 
@@ -4825,7 +4838,7 @@ async function getOrCreateQuickToken(){
   try{
     const { data } = await sb.from('quick_tokens').select('token').eq('user_id', user.id).maybeSingle();
     if (data && data.token) return data.token;
-  }catch(e){}
+  }catch(e){ _silenced('getOrCreateQuickToken', e); }
   const tok = 'orb_' + (window.crypto?.randomUUID ? crypto.randomUUID().replace(/-/g,'') : (Math.random().toString(36).slice(2)+Date.now().toString(36)));
   // Comprobar de verdad que se guardó: un token no guardado haría que Siri respondiera "token inválido"
   const { error } = await sb.from('quick_tokens').upsert({ user_id: user.id, token: tok });
@@ -4894,10 +4907,10 @@ function loadExpenseData() {
       if (legacy && isOwner) {
         saved = legacy;
         localStorage.setItem(expenseStorageKey(), legacy);
-        try { localStorage.removeItem('wealth_expense_data'); } catch {}
+        try { localStorage.removeItem('wealth_expense_data'); } catch(_e){ _silenced('loadExpenseData', _e); }
       } else if (legacy) {
         // Otro usuario: limpiar la clave global contaminada
-        try { localStorage.removeItem('wealth_expense_data'); } catch {}
+        try { localStorage.removeItem('wealth_expense_data'); } catch(_e){ _silenced('loadExpenseData', _e); }
       }
     }
     
@@ -4919,7 +4932,7 @@ function expenseTsKey() { return `wealth_expense_ts_${user?.id || 'demo'}`; }
 // resucita lo que se haya borrado aquí).
 function _expSyncedKey(){ return 'orbit_exp_synced_' + (user?.id || 'demo'); }
 function _expSyncedAt(){ return parseInt(localStorage.getItem(_expSyncedKey()) || '0', 10) || 0; }
-function _setExpSynced(ts){ try { localStorage.setItem(_expSyncedKey(), String(ts)); } catch(e) {} }
+function _setExpSynced(ts){ try { localStorage.setItem(_expSyncedKey(), String(ts)); } catch(e){ _silenced('_setExpSynced', e); } }
 function _recalcMonth(mo){
   // Los movimientos de ingreso mandan; los campos antiguos nomina/extra solo si no hay equivalente
   // (el lector del Excel guardaba la nómina como campo Y como movimiento: se contaba dos veces).
@@ -5056,10 +5069,10 @@ async function syncExpenseDataFromCloud() {
       try {
         localStorage.setItem(expenseStorageKey(), JSON.stringify(expenseData));
         localStorage.setItem(expenseTsKey(), String(cloudTs || Date.now()));
-      } catch(e) {}
+      } catch(e){ _silenced('syncExpenseDataFromCloud', e); }
       _setExpSynced(cloudTs || Date.now());
       if (typeof renderFlujos === 'function' && document.getElementById('p-flujos')?.classList.contains('active')) {
-        try { renderFlujos(); } catch(e) {}
+        try { renderFlujos(); } catch(e){ _silenced('syncExpenseDataFromCloud', e); }
       }
     } else if (localKeys && localTs > cloudTs) {
       // Este dispositivo tiene datos más recientes que la nube → fusionar lo nuevo de la nube y subir
@@ -5180,9 +5193,9 @@ async function limpiarPlazos(){
     const mo=expenseData[key];
     if(mo && (!mo.items||!mo.items.length) && !(mo.nomina>0) && !(mo.totalExpense>0)) delete expenseData[key];
   });
-  try{ await saveExpenseData?.(); }catch(e){}
+  try{ await saveExpenseData?.(); }catch(e){ _silenced('limpiarPlazos', e); }
   toast(`✓ ${removed} cuotas de plazos eliminadas`,'ok');
-  try{ renderFlujos?.(); }catch(e){}
+  try{ renderFlujos?.(); }catch(e){ _silenced('limpiarPlazos', e); }
 }
 window.limpiarPlazos = limpiarPlazos;
 
@@ -5202,19 +5215,19 @@ async function diagPrecios(ticker){
       console.log(`%c${base}`,'font-weight:bold', `(${res.name})`);
       for(const c of res.candidates){
         let td=null,fh=null,fmp=null;
-        try{ const r=await fetch(`${TD_BASE}/quote?symbol=${c.td}&apikey=${TD_API_KEY}`); const d=await r.json(); if(d.close)td=+d.close; }catch(e){}
+        try{ const r=await fetch(`${TD_BASE}/quote?symbol=${c.td}&apikey=${TD_API_KEY}`); const d=await r.json(); if(d.close)td=+d.close; }catch(e){ _silenced('diagPrecios', e); }
         await new Promise(r=>setTimeout(r,350));
-        if(FMP_KEY){ try{ const r=await fetch(`${FMP_BASE}/quote/${c.fmp}?apikey=${FMP_KEY}`); const d=await r.json(); if(Array.isArray(d)&&d[0]?.price)fmp=d[0].price; }catch(e){} await new Promise(r=>setTimeout(r,350)); }
-        try{ const r=await fetch(`${FINNHUB_BASE}/quote?symbol=${c.fh}&token=${FINNHUB_KEY}`); const d=await r.json(); if(d.c>0)fh=d.c; }catch(e){}
+        if(FMP_KEY){ try{ const r=await fetch(`${FMP_BASE}/quote/${c.fmp}?apikey=${FMP_KEY}`); const d=await r.json(); if(Array.isArray(d)&&d[0]?.price)fmp=d[0].price; }catch(e){ _silenced('diagPrecios', e); } await new Promise(r=>setTimeout(r,350)); }
+        try{ const r=await fetch(`${FINNHUB_BASE}/quote?symbol=${c.fh}&token=${FINNHUB_KEY}`); const d=await r.json(); if(d.c>0)fh=d.c; }catch(e){ _silenced('diagPrecios', e); }
         await new Promise(r=>setTimeout(r,350));
         const got=[]; if(td)got.push(`TD=${td}`); if(fmp)got.push(`FMP=${fmp}`); if(fh)got.push(`FH=${fh}`);
         console.log(`   ${c.td.padEnd(11)} [${c.ccy}]  ${got.length?got.join(' · '):'— ninguna fuente'}`);
       }
     } else {
       let td=null,fh=null,fmp=null;
-      try{ const r=await fetch(`${TD_BASE}/quote?symbol=${tk}&apikey=${TD_API_KEY}`); const d=await r.json(); if(d.close)td=+d.close; }catch(e){}
-      try{ const r=await fetch(`${FINNHUB_BASE}/quote?symbol=${tk}&token=${FINNHUB_KEY}`); const d=await r.json(); if(d.c>0)fh=d.c; }catch(e){}
-      if(FMP_KEY){ try{ const r=await fetch(`${FMP_BASE}/quote/${tk}?apikey=${FMP_KEY}`); const d=await r.json(); if(Array.isArray(d)&&d[0]?.price)fmp=d[0].price; }catch(e){} }
+      try{ const r=await fetch(`${TD_BASE}/quote?symbol=${tk}&apikey=${TD_API_KEY}`); const d=await r.json(); if(d.close)td=+d.close; }catch(e){ _silenced('diagPrecios', e); }
+      try{ const r=await fetch(`${FINNHUB_BASE}/quote?symbol=${tk}&token=${FINNHUB_KEY}`); const d=await r.json(); if(d.c>0)fh=d.c; }catch(e){ _silenced('diagPrecios', e); }
+      if(FMP_KEY){ try{ const r=await fetch(`${FMP_BASE}/quote/${tk}?apikey=${FMP_KEY}`); const d=await r.json(); if(Array.isArray(d)&&d[0]?.price)fmp=d[0].price; }catch(e){ _silenced('diagPrecios', e); } }
       const got=[]; if(td)got.push(`TD=${td}`); if(fmp)got.push(`FMP=${fmp}`); if(fh)got.push(`FH=${fh}`);
       console.log(`%c${base}`,'font-weight:bold', got.length?('OK → '+got.join(' · ')):'no encontrado — dime el ticker si es un ETF europeo');
     }
@@ -5234,13 +5247,13 @@ async function applySaldoChanges(){
     const b = blocks.find(x=>x.id===c.id && !x.deleted);
     if(!b) continue;
     b.value = c.newVal; b.eur_value = c.newVal; b.updated_at = new Date().toISOString();
-    try{ await saveBlockDB(b); }catch(e){}
+    try{ await saveBlockDB(b); }catch(e){ _silenced('applySaldoChanges', e); }
     n++;
   }
   window._pendingSaldos = null;
-  try{ await snapshot(true); }catch(e){}
+  try{ await snapshot(true); }catch(e){ _silenced('applySaldoChanges', e); }
   toastUndo(`✓ ${n} saldo${n>1?'s':''} actualizado${n>1?'s':''}`);
-  try{ renderDash?.(); renderPatr?.(); renderSidebar?.(); }catch(e){}
+  try{ renderDash?.(); renderPatr?.(); renderSidebar?.(); }catch(e){ _silenced('applySaldoChanges', e); }
 }
 window.applySaldoChanges = applySaldoChanges;
 
@@ -5253,12 +5266,12 @@ async function applyOperation(){
     const cur = cash.eur_value||cash.value||0;
     const nv = op.tipo==='venta' ? cur+op.importe : cur-op.importe;
     cash.value=nv; cash.eur_value=nv; cash.updated_at=new Date().toISOString();
-    try{ await saveBlockDB(cash); }catch(e){}
+    try{ await saveBlockDB(cash); }catch(e){ _silenced('applyOperation', e); }
   }
   window._pendingOp = null;
-  try{ await snapshot(true); }catch(e){}
+  try{ await snapshot(true); }catch(e){ _silenced('applyOperation', e); }
   toastUndo(`✓ ${op.tipo==='venta'?'Venta':'Compra'} de ${op.activo} registrada`);
-  try{ renderDash?.(); renderPatr?.(); renderSidebar?.(); }catch(e){}
+  try{ renderDash?.(); renderPatr?.(); renderSidebar?.(); }catch(e){ _silenced('applyOperation', e); }
 }
 window.applyOperation = applyOperation;
 
@@ -5293,10 +5306,10 @@ async function confirmPlazos(){
     mo.totalIncome  = mo.items.filter(i=>i.isIncome).reduce((s,i)=>s+(i.amount||0),0) + (mo.nomina||0) + (mo.extra||0);
     mo.savings = mo.totalIncome - mo.totalExpense;
   });
-  try{ await saveExpenseData?.(); }catch(e){}
+  try{ await saveExpenseData?.(); }catch(e){ _silenced('confirmPlazos', e); }
   window._pendingPlazos = null;
   toastUndo(`✓ Registrado: ${cuota.toLocaleString('es-ES')}€/mes durante ${p.meses} meses`);
-  try{ renderFlujos?.(); }catch(e){}
+  try{ renderFlujos?.(); }catch(e){ _silenced('confirmPlazos', e); }
 }
 window.confirmPlazos = confirmPlazos;
 
@@ -5330,7 +5343,7 @@ async function mergeExpenseMovements(movs, account){
     mo.totalIncome  = mo.items.filter(i=>i.isIncome).reduce((s,i)=>s+(i.amount||0),0) + (mo.nomina||0) + (mo.extra||0);
     mo.savings = mo.totalIncome - mo.totalExpense;
   });
-  try{ await saveExpenseData?.(); }catch(e){}
+  try{ await saveExpenseData?.(); }catch(e){ _silenced('mergeExpenseMovements', e); }
   return count;
 }
 
@@ -5442,7 +5455,7 @@ async function handleExpenseUpload(file) {
           conflicts.forEach(cm => {
             const mIdx = MN.indexOf(cm);
             const dup = docs.filter(d => d.doc_type==='nomina' && new Date(d.created_at||d.date).getMonth()===mIdx);
-            dup.forEach(d => { try{ deleteDoc(d.id); }catch(e){} });
+            dup.forEach(d => { try{ deleteDoc(d.id); }catch(e){ _silenced('handleExpenseUpload', e); } });
           });
           docs = docs.filter(d => !(d.doc_type==='nomina' && conflicts.includes(MN[new Date(d.created_at||d.date).getMonth()])));
         }
@@ -5643,7 +5656,7 @@ function confirmModal(title, htmlBody, primaryLabel, secondaryLabel){
         <button class="btn btn-primary" data-r="1">${primaryLabel||'Aceptar'}</button>
       </div>
     </div>`;
-    const done=(v)=>{ try{ov.remove();}catch(e){} resolve(v); };
+    const done=(v)=>{ try{ov.remove();}catch(e){ _silenced('done', e); } resolve(v); };
     ov.querySelector('[data-r="1"]').onclick=()=>done(true);
     ov.querySelector('[data-r="0"]').onclick=()=>done(false);
     ov.addEventListener('click',e=>{ if(e.target===ov) done(false); });
@@ -5996,7 +6009,7 @@ function loadSavingsTarget() {
   try { return parseFloat(localStorage.getItem(savingsTargetKey())) || 0; } catch { return 0; }
 }
 function saveSavingsTarget(pct) {
-  try { localStorage.setItem(savingsTargetKey(), String(pct)); } catch {}
+  try { localStorage.setItem(savingsTargetKey(), String(pct)); } catch(_e){ _silenced('saveSavingsTarget', _e); }
 }
 
 // ─── PROYECCIÓN FIN DE MES + RUNWAY (colchón de seguridad) ───
@@ -6117,7 +6130,7 @@ function loadBudgets() {
   try { return JSON.parse(localStorage.getItem(budgetsKey())) || {}; } catch { return {}; }
 }
 function saveBudgets(budgets) {
-  try { localStorage.setItem(budgetsKey(), JSON.stringify(budgets)); } catch {}
+  try { localStorage.setItem(budgetsKey(), JSON.stringify(budgets)); } catch(_e){ _silenced('saveBudgets', _e); }
 }
 
 function renderBudgets(months) {
@@ -6432,9 +6445,9 @@ async function eliminarCuotasPlazos(){
     n += before - m.items.length;
     recalcMonth(m);
   });
-  try{ await saveExpenseData?.(); }catch(e){}
+  try{ await saveExpenseData?.(); }catch(e){ _silenced('eliminarCuotasPlazos', e); }
   toastUndo(`✓ ${n} cuotas eliminadas`);
-  try{ renderFlujos?.(); }catch(e){}
+  try{ renderFlujos?.(); }catch(e){ _silenced('eliminarCuotasPlazos', e); }
 }
 window.eliminarCuotasPlazos = eliminarCuotasPlazos;
 
@@ -6663,7 +6676,7 @@ function toggleNominaVisible(btn){
 }
 function nominaRefKey(){ return `wealth_nomina_ref_${user?.id || 'demo'}`; }
 function loadNominaRef(){ try { return parseFloat(localStorage.getItem(nominaRefKey())) || 0; } catch { return 0; } }
-function saveNominaRef(v){ try { localStorage.setItem(nominaRefKey(), String(v)); } catch {} }
+function saveNominaRef(v){ try { localStorage.setItem(nominaRefKey(), String(v)); } catch(_e){ _silenced('saveNominaRef', _e); } }
 // Importes del plan de gasto: céntimos en cifras pequeñas (15,50 €) y punto de miles en las grandes (1.890 €)
 function feP(n){
   const v = Number(n) || 0, neg = v < 0, a = Math.abs(v);
@@ -6780,8 +6793,8 @@ function saveSavingsTargetClick() {
   document.querySelector('.overlay')?.remove();
   const sp = spendPlan();
   toast(sp.ready ? `✓ Objetivo ${val}%: puedes gastar ${feP(sp.spendable)} al mes` : `✓ Objetivo: ${val}% de tus ingresos`);
-  try { renderFlujos(); } catch(e) {}
-  try { if (document.getElementById('dash-content')) renderDash(); } catch(e) {}
+  try { renderFlujos(); } catch(e){ _silenced('saveSavingsTargetClick', e); }
+  try { if (document.getElementById('dash-content')) renderDash(); } catch(e){ _silenced('saveSavingsTargetClick', e); }
 }
 
 // ─── GASTOS RECURRENTES (Fijos vs Variables) ───
@@ -7400,10 +7413,10 @@ async function deleteMonth(monthName, btnEl){
   if(!ok) return;
   pushUndo('expense', 'eliminar mes');
   delete expenseData[monthName];
-  try{ await saveExpenseData?.(); }catch(e){}
-  try{ btnEl.closest('.overlay')?.remove(); }catch(e){}
+  try{ await saveExpenseData?.(); }catch(e){ _silenced('deleteMonth', e); }
+  try{ btnEl.closest('.overlay')?.remove(); }catch(e){ _silenced('deleteMonth', e); }
   toastUndo(`✓ Mes de ${monthName} eliminado`);
-  try{ renderFlujos?.(); }catch(e){}
+  try{ renderFlujos?.(); }catch(e){ _silenced('deleteMonth', e); }
 }
 window.deleteMonth = deleteMonth;
 
@@ -7546,7 +7559,7 @@ function renderDocs() {
             const ar = analysis.action_required || {};
             let daysLeft = null;
             if (ar.deadline) {
-              try { daysLeft = Math.round((new Date(ar.deadline) - new Date()) / 86400000); } catch {}
+              try { daysLeft = Math.round((new Date(ar.deadline) - new Date()) / 86400000); } catch(_e){ _silenced('renderDocs', _e); }
             }
             
             return `
@@ -7699,7 +7712,7 @@ async function genReport(kind) {
         gastosDetail += `  · ${cat}: ${fE(v)} (${(v/totalGasto*100).toFixed(0)}%)\n`;
       });
     }
-  } catch{}
+  } catch(_e){ _silenced('genReport', _e); }
   
   const promptInstructions = {
     mensual: 'Análisis profundo del MES actual. Foco: posiciones de bolsa con su P&L, gastos del mes, alertas, cambios desde el informe anterior.',
@@ -7994,7 +8007,7 @@ async function downloadReport() {
     try{
       const {data}=await sb.from('app_events').select('event,props,created_at').eq('user_id',user.id).in('event',['article_read','inspo_read']).gte('created_at',periodStart.toISOString());
       (data||[]).forEach(e=>{ if(e.event==='article_read')readArticles.push(e.props||{}); else readInspo.push(e.props||{}); });
-    }catch(e){}
+    }catch(e){ _silenced('pageBreak', e); }
   }
 
   // Narrativa IA + macro
@@ -8005,7 +8018,7 @@ async function downloadReport() {
     const mp=`Resume en JSON el contexto macroeconomico del periodo ${periodLabel} para un inversor europeo. Devuelve SOLO: {"titulares":["3-4 hitos macro, max 12 palabras"],"resumen":"2 frases sobre el entorno de mercado"}`;
     const r=await fetch(AI,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:'llama-3.3-70b-versatile',max_tokens:400,messages:[{role:'user',content:mp}]})});
     if(r.ok){const d=await r.json();const txt=extractAIText(d).replace(/```json|```/g,'').trim();const m=txt.match(/\{[\s\S]*\}/);if(m)macro=JSON.parse(m[0]);}
-  }catch(e){}
+  }catch(e){ _silenced('pageBreak', e); }
 
   // ───── PORTADA / cabecera ─────
   doc.setFillColor(...NAVY); doc.rect(0,0,W,62,'F');
@@ -8185,13 +8198,13 @@ function pdfSafeText(s) {
 window._insFilter = { activo:'all', tema:'all', favOnly:false, following:false, mine:false };
 
 function getFavSources(){ try{ return JSON.parse(localStorage.getItem('orbit_fav_sources')||'[]'); }catch(e){ return []; } }
-function setFavSources(a){ try{ localStorage.setItem('orbit_fav_sources', JSON.stringify(a||[])); }catch(e){} }
+function setFavSources(a){ try{ localStorage.setItem('orbit_fav_sources', JSON.stringify(a||[])); }catch(e){ _silenced('setFavSources', e); } }
 function toggleFavSource(src){
   src=(src||'').trim(); if(!src) return;
   const f=getFavSources(); const i=f.indexOf(src);
   if(i>=0) f.splice(i,1); else f.push(src);
   setFavSources(f);
-  try{ toast(i>=0 ? `Quitado de favoritos: ${src}` : `★ Fuente favorita: ${src}`); }catch(e){}
+  try{ toast(i>=0 ? `Quitado de favoritos: ${src}` : `★ Fuente favorita: ${src}`); }catch(e){ _silenced('toggleFavSource', e); }
   rerenderInsights();
 }
 
@@ -8233,7 +8246,7 @@ function myTickerSet(){
       if(b.deleted) return;
       ((b.extra&&b.extra.positions)||[]).forEach(p=>{ if(p&&p.ticker) set.add(String(p.ticker).toUpperCase().trim()); });
     });
-  }catch(e){}
+  }catch(e){ _silenced('myTickerSet', e); }
   return set;
 }
 function filterInsights(list){
@@ -8296,7 +8309,7 @@ async function buscarMasTema(){
   try{
     const cats=(tema==='tipos'||tema==='geopolitica'||tema==='macro'||tema==='energia')?['general','forex']:['general'];
     for(const c of cats){ const r=await fetch(`${FINNHUB_BASE}/news?category=${c}&token=${FINNHUB_KEY}`); if(r.ok){ const a=await r.json(); if(Array.isArray(a)) arts=arts.concat(a.slice(0,15)); } }
-  }catch(e){}
+  }catch(e){ _silenced('buscarMasTema', e); }
   const kw=INS_TEMAS[tema].kw; const existing=new Set((window._latestInsights||[]).map(i=>i.title));
   let nuevos=arts.filter(a=>{ if(!a.headline||existing.has(a.headline)) return false; const hh=((a.headline||'')+' '+(a.summary||'')).toLowerCase(); return kw.some(w=>hh.includes(w.trim())); }).slice(0,6);
   if(!nuevos.length){ if(counter) counter.textContent=''; toast(`Sin novedades de ${INS_TEMAS[tema].label} ahora mismo`); rerenderInsights(); return; }
@@ -8307,7 +8320,7 @@ async function buscarMasTema(){
     const prompt=`Un inversor de nivel ${_lvl} quiere entender estas noticias de ${INS_TEMAS[tema].label}. Para cada una, en 1-2 frases claras y sencillas, di por qué importa y qué le enseña. Devuelve JSON sin markdown: {"r":[{"i":0,"why":"..."}]}\n\n${list}`;
     const r=await fetch(AI,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:'llama-3.3-70b-versatile',max_tokens:1200,messages:[{role:'user',content:prompt}]})});
     if(r.ok){ const d=await r.json(); const txt=(typeof extractAIText==='function'?extractAIText(d):'')||''; const m=txt.replace(/```json\s*|\s*```/g,'').match(/\{[\s\S]*\}/); if(m){ const p=JSON.parse(m[0]); (p.r||[]).forEach(it=>{ if(add[it.i]) add[it.i].why=it.why; }); } }
-  }catch(e){}
+  }catch(e){ _silenced('buscarMasTema', e); }
   window._latestInsights=[...add, ...(window._latestInsights||[])];
   toast(`✓ +${add.length} de ${INS_TEMAS[tema].label}`); rerenderInsights();
 }
@@ -8328,13 +8341,13 @@ function rerenderInsights(){
 
 // ─── Seguimiento de noticias (timeline "antes decía X, ahora Y") ───
 function getFollowed(){ try{ return JSON.parse(localStorage.getItem('orbit_followed')||'[]'); }catch(e){ return []; } }
-function setFollowed(a){ try{ localStorage.setItem('orbit_followed', JSON.stringify(a||[])); }catch(e){} }
+function setFollowed(a){ try{ localStorage.setItem('orbit_followed', JSON.stringify(a||[])); }catch(e){ _silenced('setFollowed', e); } }
 function storyId(ins){ return 'f'+((ins&&(ins.url||ins.title))||'').toString().replace(/[^a-z0-9]/gi,'').slice(0,44); }
 function isFollowed(id){ return getFollowed().some(s=>s.id===id); }
 
 // ─── Conversaciones del Mentor asociadas a una noticia ───
 function getStoryConvos(){ try{ return JSON.parse(localStorage.getItem('orbit_story_convos')||'{}'); }catch(e){ return {}; } }
-function setStoryConvos(o){ try{ localStorage.setItem('orbit_story_convos', JSON.stringify(o||{})); }catch(e){} }
+function setStoryConvos(o){ try{ localStorage.setItem('orbit_story_convos', JSON.stringify(o||{})); }catch(e){ _silenced('setStoryConvos', e); } }
 function getStoryConvo(id){ return getStoryConvos()[id]||[]; }
 function addStoryMsg(id, role, content){
   if(!id||!content) return;
@@ -8389,7 +8402,7 @@ function normalizeTopic(t){
   return t;
 }
 function getTopics(){ try{ return (JSON.parse(localStorage.getItem('orbit_topics')||'[]')||[]).map(normalizeTopic); }catch(e){ return []; } }
-function setTopics(a){ try{ localStorage.setItem('orbit_topics', JSON.stringify(a||[])); }catch(e){} }
+function setTopics(a){ try{ localStorage.setItem('orbit_topics', JSON.stringify(a||[])); }catch(e){ _silenced('setTopics', e); } }
 function addTopic(label, opts){
   label=(label||'').trim(); if(!label) return false;
   let core=[], context=[], exclude=[];
@@ -8458,7 +8471,7 @@ async function openTopicNews(id){
   const q=coreQ+exQ;
   async function fetchNews(inTitle){
     try{ const r=await fetch(`/api/news?q=${encodeURIComponent(q)}&pageSize=30${inTitle?'&inTitle=1':''}`);
-      if(r.ok){ const d=await r.json(); return d.articles||[]; } }catch(e){}
+      if(r.ok){ const d=await r.json(); return d.articles||[]; } }catch(e){ _silenced('fetchNews', e); }
     return [];
   }
   // 1) pasada estricta: el core debe estar en el TÍTULO  2) si hay poco, ampliamos a cuerpo
@@ -8519,13 +8532,13 @@ async function socialBoot(){
   if(demo || !sb || !user || user.id==='demo') return;
   try{
     const {data:p}=await sb.from('profiles').select('display_name,invite_code').eq('id',user.id).maybeSingle();
-    if(p && !p.display_name) { try{ await sb.from('profiles').update({display_name:myDisplayName()}).eq('id',user.id); }catch(e){} }
+    if(p && !p.display_name) { try{ await sb.from('profiles').update({display_name:myDisplayName()}).eq('id',user.id); }catch(e){ _silenced('socialBoot', e); } }
     _myInvite=p?.invite_code||null;
-  }catch(e){}
+  }catch(e){ _silenced('socialBoot', e); }
   const code=inviteParam();
   if(code){
-    try{ const {data}=await sb.rpc('redeem_invite',{code}); if(data && data!=='self') toast('🤝 Conectado con '+data); }catch(e){}
-    try{ const u=new URL(location.href); u.searchParams.delete('invite'); history.replaceState({},'',u.toString()); }catch(e){}
+    try{ const {data}=await sb.rpc('redeem_invite',{code}); if(data && data!=='self') toast('🤝 Conectado con '+data); }catch(e){ _silenced('socialBoot', e); }
+    try{ const u=new URL(location.href); u.searchParams.delete('invite'); history.replaceState({},'',u.toString()); }catch(e){ _silenced('socialBoot', e); }
   }
   await loadFriends();
 }
@@ -8728,7 +8741,7 @@ async function updateFollowed(id){
     const q=(words.length?words:[s.title||'']).join(' OR ');
     const r=await fetch(`/api/news?q=${encodeURIComponent(q)}&pageSize=12`);
     if(r.ok){ const data=await r.json(); articles=(data.articles||[]).map(a=>({headline:a.title,summary:a.description||a.content||''})); }
-  }catch(e){}
+  }catch(e){ _silenced('updateFollowed', e); }
   let recent=(articles||[]).filter(a=>a.headline && a.headline!=='[Removed]').slice(0,6);
   if(!recent.length) recent=(articles||[]).slice(0,4);
   const last=(s.snapshots||[])[s.snapshots.length-1];
@@ -8744,7 +8757,7 @@ En 2-3 frases en español, claras y sin tecnicismos, di QUÉ HA CAMBIADO desde l
   try{
     const r=await fetch(AI,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:'llama-3.3-70b-versatile',max_tokens:300,messages:[{role:'user',content:prompt}]})});
     if(r.ok){ const d=await r.json(); text=((typeof extractAIText==='function'?extractAIText(d):(d?.choices?.[0]?.message?.content||d?.content?.[0]?.text))||'').trim(); }
-  }catch(e){}
+  }catch(e){ _silenced('updateFollowed', e); }
   if(!text) text='No he encontrado novedades claras sobre esta noticia esta vez.';
   s.snapshots=s.snapshots||[]; s.snapshots.push({date:new Date().toISOString(), text});
   setFollowed(list); toast('✓ Seguimiento actualizado'); rerenderInsights();
@@ -8815,7 +8828,7 @@ async function loadDailyInsights(forceRefresh = false) {
           return;
         }
       }
-    } catch {}
+    } catch(_e){ _silenced('loadDailyInsights', _e); }
   }
 
   feed.innerHTML = `<div style="padding:40px;text-align:center;background:var(--surf);border:1px solid var(--line);border-radius:var(--r-lg)">
@@ -9002,7 +9015,7 @@ Devuelve EXACTAMENTE este JSON sin markdown:
   // Guardar caché
   try {
     localStorage.setItem(CACHE_KEY, JSON.stringify({ ts: Date.now(), insights }));
-  } catch {}
+  } catch(_e){ _silenced('score', _e); }
 
   // Guardar para el advisor
   window._latestInsights = insights;
@@ -9012,7 +9025,7 @@ Devuelve EXACTAMENTE este JSON sin markdown:
   }));
 
   renderInsightsFeed(insights, Date.now());
-  try{ generateDailyBrief(insights); }catch(e){}
+  try{ generateDailyBrief(insights); }catch(e){ _silenced('score', e); }
 }
 
 // ─── "El mundo hoy, y tú": síntesis diaria de las noticias para la cartera del usuario ───
@@ -9021,7 +9034,7 @@ async function generateDailyBrief(insights){
   if(!insights || !insights.length){ host.innerHTML=''; return; }
   // caché 6h
   try{ const c=JSON.parse(localStorage.getItem('orbit_brief')||'null');
-    if(c && (Date.now()-c.ts)<6*3600*1000 && c.txt){ paintBrief(c.txt); return; } }catch(e){}
+    if(c && (Date.now()-c.ts)<6*3600*1000 && c.txt){ paintBrief(c.txt); return; } }catch(e){ _silenced('generateDailyBrief', e); }
   const top=insights.slice(0,8).map((x,i)=>`${i+1}. ${x.title}${x.why?' ('+x.why+')':''}`).join('\n');
   const mine=[...myTickerSet()];
   const _lvl=(window._userProfile?.investment_experience)||'principiante';
@@ -9037,9 +9050,9 @@ Escribe un resumen de 2-3 frases, cálido y claro, titulado mentalmente "el mund
     if(!r.ok) return;
     const d=await r.json(); let txt=extractAIText(d).trim().replace(/^["']|["']$/g,'');
     if(!txt) return;
-    try{ localStorage.setItem('orbit_brief',JSON.stringify({ts:Date.now(),txt})); }catch(e){}
+    try{ localStorage.setItem('orbit_brief',JSON.stringify({ts:Date.now(),txt})); }catch(e){ _silenced('generateDailyBrief', e); }
     paintBrief(txt);
-  }catch(e){}
+  }catch(e){ _silenced('generateDailyBrief', e); }
 }
 function paintBrief(txt){
   const host=document.getElementById('daily-brief'); if(!host) return;
@@ -9227,8 +9240,8 @@ function explainCacheKey(insight, g){
 function safeJSON(text){
   if(!text) return null;
   let s=text.trim().replace(/^```json/i,'').replace(/^```/,'').replace(/```$/,'').trim();
-  try{ return JSON.parse(s); }catch(e){}
-  const m=s.match(/\{[\s\S]*\}/); if(m){ try{ return JSON.parse(m[0]); }catch(e){} }
+  try{ return JSON.parse(s); }catch(e){ _silenced('safeJSON', e); }
+  const m=s.match(/\{[\s\S]*\}/); if(m){ try{ return JSON.parse(m[0]); }catch(e){ _silenced('safeJSON', e); } }
   return null;
 }
 // Render determinista del JSON → markdown (formato 100% fijo, lo monta el código)
@@ -9361,7 +9374,7 @@ async function analyzeInsightWithAdvisor(insight, tid, depth){
   // Caché: misma noticia + misma foto de cartera + mismo nivel → misma explicación
   const ckey=explainCacheKey(insight,g)+':full';
   try{ const cached=localStorage.getItem(ckey); if(cached){ const j=JSON.parse(cached);
-    const parts=buildExplainParts(j,insight,rid); revealExplain(tid,parts,true); persistInsightChat(insight,_sid,parts.fullText); return; } }catch(e){}
+    const parts=buildExplainParts(j,insight,rid); revealExplain(tid,parts,true); persistInsightChat(insight,_sid,parts.fullText); return; } }catch(e){ _silenced('analyzeInsightWithAdvisor', e); }
 
   const hechos = `Patrimonio total del usuario: ${fE(g.tot)}.
 ${g.matched.length
@@ -9402,12 +9415,12 @@ ${schema}`;
   const valid=j=> j && typeof j.titular==='string' && typeof j.explicacion==='string';
 
   let j=null;
-  try{ j=safeJSON(await callLLM()); }catch(e){}
-  if(!valid(j)){ try{ j=safeJSON(await callLLM()); }catch(e){} }   // 1 reintento
+  try{ j=safeJSON(await callLLM()); }catch(e){ _silenced('valid', e); }
+  if(!valid(j)){ try{ j=safeJSON(await callLLM()); }catch(e){ _silenced('valid', e); } }   // 1 reintento
 
   if(valid(j)){
     if(Array.isArray(j.impacto_cartera)) j.impacto_cartera.forEach(x=>{ if(typeof x.pct==='number' && (x.pct<0||x.pct>100)) x.pct=null; });
-    try{ localStorage.setItem(ckey, JSON.stringify(j)); }catch(e){}
+    try{ localStorage.setItem(ckey, JSON.stringify(j)); }catch(e){ _silenced('valid', e); }
   } else {
     j=explainFallbackJSON(insight,g);   // nunca pantalla rota
   }
@@ -9442,7 +9455,7 @@ async function loadNews(forceRefresh = false) {
           return;
         }
       }
-    } catch {}
+    } catch(_e){ _silenced('loadNews', _e); }
   }
   
   el.innerHTML = '<div style="padding:16px;text-align:center"><div class="dots"><span>•</span><span>•</span><span>•</span></div><div style="font-size:11px;color:var(--t-3);margin-top:8px">Buscando noticias con IA…</div></div>';
@@ -9521,7 +9534,7 @@ REGLAS:
             return;
           }
         }
-      } catch {}
+      } catch(_e){ _silenced('loadNews', _e); }
       
       el.innerHTML = `<div style="padding:16px">
         <div style="font-size:12px;color:var(--t-3);line-height:1.7">
@@ -9562,7 +9575,7 @@ REGLAS:
         ts: Date.now(),
         articles
       }));
-    } catch {}
+    } catch(_e){ _silenced('loadNews', _e); }
     
     // Guardar para que generateInsights pueda usarlas
     window._latestNews = articles.map(a => ({
@@ -9705,8 +9718,8 @@ Devuelve EXACTAMENTE este JSON válido, sin markdown:
   const valid = c => c && typeof c.noticia==='string' && c.noticia.trim().length>0;
 
   let content=null;
-  try{ content=safeJSON(await call()); }catch(e){}
-  if(!valid(content)){ try{ content=safeJSON(await call()); }catch(e){} }   // 1 reintento
+  try{ content=safeJSON(await call()); }catch(e){ _silenced('valid', e); }
+  if(!valid(content)){ try{ content=safeJSON(await call()); }catch(e){ _silenced('valid', e); } }   // 1 reintento
   if(!valid(content)){
     // Fallback en ESPAÑOL y estructurado (último recurso)
     const ctx = (mode==='insight')
@@ -9875,7 +9888,7 @@ function submitReaderQuiz() {
     stats.total += questions.length;
     stats.lastDate = new Date().toISOString();
     localStorage.setItem(key, JSON.stringify(stats));
-  } catch {}
+  } catch(_e){ _silenced('submitReaderQuiz', _e); }
   
   body.innerHTML = `
     <div style="text-align:center;padding:8px 0 20px">
@@ -10123,19 +10136,19 @@ function loadChatLocal() {
   try {
     const raw = localStorage.getItem('orbit_chat_' + (user?.id || 'anon'));
     if (raw) { const arr = JSON.parse(raw); if (Array.isArray(arr)) return arr; }
-  } catch (e) {}
+  } catch(e){ _silenced('loadChatLocal', e); }
   return null;
 }
 function saveChatLocal() {
   try {
     if (demo) return;
     localStorage.setItem('orbit_chat_' + (user?.id || 'anon'), JSON.stringify(chat.slice(-120)));
-  } catch (e) {}
+  } catch(e){ _silenced('saveChatLocal', e); }
 }
 function clearChatMemory() {
   if (!confirm('¿Borrar el historial del Mentor? Esta acción no se puede deshacer.')) return;
   chat = [];
-  try { localStorage.removeItem('orbit_chat_' + (user?.id || 'anon')); } catch (e) {}
+  try { localStorage.removeItem('orbit_chat_' + (user?.id || 'anon')); } catch(e){ _silenced('clearChatMemory', e); }
   const msgs = $('chat-msgs'); if (msgs) msgs.innerHTML = '';
   initChat();
 }
@@ -10191,7 +10204,7 @@ function buildContext(includeDocText = false) {
       if (weak) c += `Pilar más débil con datos: ${weak.label} (${weak.score}/100) → es por donde más sube el score.\n`;
       if (missing.length) c += `Pilares sin datos (anímale a completarlos): ${missing.join(', ')}.\n`;
     }
-  } catch (e) {}
+  } catch(e){ _silenced('buildContext', e); }
 
   c += `\n=== ACTIVOS ===\n`;
   blocks.filter(b=>!b.deleted).forEach(b=>{
@@ -10335,7 +10348,7 @@ function buildContext(includeDocText = false) {
         c += `\nPresupuestos definidos: ` + Object.entries(budgets).map(([cat,lim])=>`${cat} ${fE(lim)}/mes`).join(', ');
       }
     }
-  } catch {}
+  } catch(_e){ _silenced('buildContext', _e); }
 
   // ═══ TACTICAL: diagnóstico de cash + renta fija + macro ═══
   try {
@@ -10356,7 +10369,7 @@ function buildContext(includeDocText = false) {
     if (macro?.plays?.length) {
       c += `\nNoticias macro que se le están mostrando en Tactical: ` + macro.plays.slice(0,5).map(p=>`"${p.event}"`).join('; ');
     }
-  } catch {}
+  } catch(_e){ _silenced('buildContext', _e); }
 
   // ═══ INSIGHTS: noticias relevantes a su cartera ═══
   try {
@@ -10366,7 +10379,7 @@ function buildContext(includeDocText = false) {
         c += `\n• "${ins.title}" (${ins.source})${ins.why ? ' → '+ins.why : ''}`;
       });
     }
-  } catch {}
+  } catch(_e){ _silenced('buildContext', _e); }
 
   // ═══ GOALS: metas financieras ═══
   try {
@@ -10378,7 +10391,7 @@ function buildContext(includeDocText = false) {
         c += `\n• ${g.name}: objetivo ${fE(g.targetAmount)} en ${g.years} años. Capital inicial ${fE(g.initialAmount||0)}, aporta ${fE(g.monthlyContribution||0)}/mes a ${g.expectedReturn||6}% esperado.`;
       });
     }
-  } catch {}
+  } catch(_e){ _silenced('buildContext', _e); }
 
   // ═══ PERFORMANCE: rentabilidad calculada ═══
   try {
@@ -10386,7 +10399,7 @@ function buildContext(includeDocText = false) {
     if (flows.length >= 2) {
       c += `\n\n=== PERFORMANCE ===\nTiene ${flows.length} flujos de inversión registrados para calcular su rentabilidad real (TWR/XIRR) vs S&P 500.`;
     }
-  } catch {}
+  } catch(_e){ _silenced('buildContext', _e); }
 
   // ═══ AVISOS activos (lo que el cerebro ya detectó) ═══
   try {
@@ -10394,7 +10407,7 @@ function buildContext(includeDocText = false) {
       c += `\n\n=== AVISOS ACTIVOS ===`;
       _alerts.forEach(a => { c += `\n• [${a.urgencia}] ${a.titulo}: ${a.cuerpo}`; });
     }
-  } catch {}
+  } catch(_e){ _silenced('buildContext', _e); }
 
   return c;
 }
@@ -10823,7 +10836,7 @@ function updMsg(id, content) {
 let uploadBlockId = null;
 // ═══ Orbit Coach — onboarding contextual estilo Whoop (1ª vez por feature) ═══
 function _coachSeen(k){ try{ return localStorage.getItem('orbit_coach_'+k)==='1'; }catch(e){ return false; } }
-function _coachMark(k){ try{ localStorage.setItem('orbit_coach_'+k,'1'); }catch(e){} }
+function _coachMark(k){ try{ localStorage.setItem('orbit_coach_'+k,'1'); }catch(e){ _silenced('_coachMark', e); } }
 const COACHES = {
   siri: { cta:'Empezar', steps:[
     { ic:'microphone', t:'Apunta gastos hablando', d:'Di “Oye Siri, Gasto Orbit” y registra un gasto en segundos — sin abrir la app.' },
@@ -10868,16 +10881,16 @@ function orbitCoach(key, opts){
     </div>`;
   }
   window.coachNext = ()=>{ if(_coachI<steps.length-1){ _coachI++; render(); } else { closeCoach(); } };
-  window.closeCoach = ()=>{ _coachMark(key); ov.classList.remove('show'); setTimeout(()=>{ try{ov.remove();}catch(e){} },220); };
+  window.closeCoach = ()=>{ _coachMark(key); ov.classList.remove('show'); setTimeout(()=>{ try{ov.remove();}catch(e){ _silenced('render', e); } },220); };
   render();
   document.body.appendChild(ov);
   requestAnimationFrame(()=>ov.classList.add('show'));
-  try{ track('coach_shown',{key}); }catch(e){}
+  try{ track('coach_shown',{key}); }catch(e){ _silenced('render', e); }
   return true;
 }
 window.orbitCoach = orbitCoach;
 // Permite re-ver cualquier guía desde Ajustes: replayCoach('siri'|'upload'|'gastos')
-function replayCoach(k){ try{ localStorage.removeItem('orbit_coach_'+k); }catch(e){} orbitCoach(k,{force:true}); }
+function replayCoach(k){ try{ localStorage.removeItem('orbit_coach_'+k); }catch(e){ _silenced('replayCoach', e); } orbitCoach(k,{force:true}); }
 window.replayCoach = replayCoach;
 
 // ═══ Orbit Tour — el Mentor te enseña la app (spotlight + siguiente) ═══
@@ -10893,18 +10906,18 @@ const TOUR_STEPS = [
   { page:'advisor', sel:()=>_visEl('.botnav button[onclick*="advisor"]','.sb .ni[onclick*="advisor"]'), t:'Y yo vivo aquí', d:'Pregúntame lo que sea sobre tu dinero: «¿qué es un ETF?», «¿voy bien para mi edad?». Conozco tu cartera y te respondo con tu contexto.' },
   { page:'dashboard', sel:null, t:'Listo. Te toca 🚀', d:'Mi consejo para empezar: sube una captura de tu bróker y activa el resumen diario. En 2 minutos Orbit ya trabaja para ti.' }
 ];
-function _visEl(...sels){ for(const q of sels){ try{ const els=document.querySelectorAll(q); for(const el of els){ const r=el.getBoundingClientRect(); const cs=getComputedStyle(el); if(r.width>0 && r.height>0 && cs.visibility!=='hidden' && cs.display!=='none') return el; } }catch(e){} } return null; }
+function _visEl(...sels){ for(const q of sels){ try{ const els=document.querySelectorAll(q); for(const el of els){ const r=el.getBoundingClientRect(); const cs=getComputedStyle(el); if(r.width>0 && r.height>0 && cs.visibility!=='hidden' && cs.display!=='none') return el; } }catch(e){ _silenced('_visEl', e); } } return null; }
 let _tourI=0, _tourEls=null;
 function startOrbitTour(){
-  try{ if(localStorage.getItem('orbit_tour_done')==='1') return; }catch(e){}
+  try{ if(localStorage.getItem('orbit_tour_done')==='1') return; }catch(e){ _silenced('startOrbitTour', e); }
   // Nunca sobre el login o el onboarding: solo con la app visible
   try{
     const onb=$('onb'), auth=$('auth'), app=$('app');
     if((onb&&onb.style.display!=='none')||(auth&&auth.style.display!=='none')||!app||app.style.display==='none') return;
-  }catch(e){}
+  }catch(e){ _silenced('startOrbitTour', e); }
   _tourI=0; _tourBuild(); _tourShow();
 }
-function replayTour(){ try{localStorage.removeItem('orbit_tour_done');}catch(e){} try{toggleUserMenu();}catch(e){} _tourI=0; _tourBuild(); _tourShow(); }
+function replayTour(){ try{localStorage.removeItem('orbit_tour_done');}catch(e){ _silenced('replayTour', e); } try{toggleUserMenu();}catch(e){ _silenced('replayTour', e); } _tourI=0; _tourBuild(); _tourShow(); }
 window.replayTour = replayTour;
 function _tourBuild(){
   if(_tourEls) return;
@@ -10915,9 +10928,9 @@ function _tourBuild(){
   _tourEls={block,hole,card};
 }
 function endOrbitTour(){
-  try{ localStorage.setItem('orbit_tour_done','1'); }catch(e){}
-  if(_tourEls){ ['block','hole','card'].forEach(k=>{ try{_tourEls[k].remove();}catch(e){} }); _tourEls=null; }
-  try{ track('tour_done',{step:_tourI}); }catch(e){}
+  try{ localStorage.setItem('orbit_tour_done','1'); }catch(e){ _silenced('endOrbitTour', e); }
+  if(_tourEls){ ['block','hole','card'].forEach(k=>{ try{_tourEls[k].remove();}catch(e){ _silenced('endOrbitTour', e); } }); _tourEls=null; }
+  try{ track('tour_done',{step:_tourI}); }catch(e){ _silenced('endOrbitTour', e); }
 }
 window.tourNext = function(){ if(_tourI<TOUR_STEPS.length-1){ _tourI++; _tourShow(); } else endOrbitTour(); };
 window.endOrbitTour = endOrbitTour;
@@ -10925,10 +10938,10 @@ function _tourShow(){
   const st=TOUR_STEPS[_tourI]; if(!_tourEls) return;
   const {hole,card}=_tourEls;
   const go=()=>{
-    let el=null; try{ el = st.sel ? st.sel() : null; }catch(e){}
+    let el=null; try{ el = st.sel ? st.sel() : null; }catch(e){ _silenced('go', e); }
     // si el elemento del paso no existe (p.ej. sin cash), salta al siguiente
     if(st.sel && !el){ if(_tourI<TOUR_STEPS.length-1){ _tourI++; _tourShow(); } else endOrbitTour(); return; }
-    if(el){ try{ el.scrollIntoView({block:'center',behavior:'instant'}); }catch(e){} }
+    if(el){ try{ el.scrollIntoView({block:'center',behavior:'instant'}); }catch(e){ _silenced('go', e); } }
     setTimeout(()=>{
       let r=null;
       if(el){ r=el.getBoundingClientRect();
@@ -10957,7 +10970,7 @@ function _tourShow(){
       card.style.left=cx+'px'; card.style.top=cy+'px';
     }, 80);
   };
-  if(st.page && typeof goto==='function' && window._curPage!==st.page){ try{ goto(st.page); }catch(e){} setTimeout(go,480); }
+  if(st.page && typeof goto==='function' && window._curPage!==st.page){ try{ goto(st.page); }catch(e){ _silenced('go', e); } setTimeout(go,480); }
   else go();
 }
 window.startOrbitTour = startOrbitTour;
@@ -11008,7 +11021,7 @@ async function enableDailyPush(){
       if (pushErr) { console.error('[push] no se pudo guardar la suscripción:', pushErr); toast('No se pudo activar el resumen diario: ' + (pushErr.message || 'error de la base de datos'), 'err'); return; }
     }
     toast('🔔 Resumen diario activado. Te avisaré cada mañana.');
-    try{ track('push_subscribed',{}); }catch(e){}
+    try{ track('push_subscribed',{}); }catch(e){ _silenced('enableDailyPush', e); }
     if(typeof renderInsightsControls==='function') renderInsightsControls();
     if(typeof renderPushPromo==='function') renderPushPromo();
   }catch(e){ console.warn('push',e); toast('No se pudo activar el resumen diario','err'); }
@@ -11016,10 +11029,10 @@ async function enableDailyPush(){
 async function disableDailyPush(){
   try{
     const reg=await navigator.serviceWorker.ready; const sub=await reg.pushManager.getSubscription();
-    if(sub){ if(sb&&user){ try{ await sb.from('push_subscriptions').delete().eq('endpoint',sub.endpoint); }catch(e){} } await sub.unsubscribe(); }
+    if(sub){ if(sb&&user){ try{ await sb.from('push_subscriptions').delete().eq('endpoint',sub.endpoint); }catch(e){ _silenced('disableDailyPush', e); } } await sub.unsubscribe(); }
     toast('Resumen diario desactivado');
     if(typeof renderInsightsControls==='function') renderInsightsControls();
-  }catch(e){}
+  }catch(e){ _silenced('disableDailyPush', e); }
 }
 async function toggleDailyPush(){ const st=await pushStatus(); if(st==='on') disableDailyPush(); else enableDailyPush(); }
 window.toggleDailyPush=toggleDailyPush; window.enableDailyPush=enableDailyPush;
@@ -11030,13 +11043,13 @@ async function syncPushTickers(){
     const reg=await navigator.serviceWorker.ready; const sub=await reg.pushManager.getSubscription();
     if(!sub) return;
     await sb.from('push_subscriptions').update({ tickers:[...myTickerSet()] }).eq('endpoint',sub.endpoint);
-  }catch(e){}
+  }catch(e){ _silenced('syncPushTickers', e); }
 }
 window.syncPushTickers=syncPushTickers;
 // Promo del resumen diario en Hoy — visible, un toque, desaparece al activar
 async function renderPushPromo(){
   const el=document.getElementById('push-promo'); if(!el) return;
-  try{ if(localStorage.getItem('orbit_pushpromo_hide')==='1'){ el.innerHTML=''; return; } }catch(e){}
+  try{ if(localStorage.getItem('orbit_pushpromo_hide')==='1'){ el.innerHTML=''; return; } }catch(e){ _silenced('renderPushPromo', e); }
   const st=await pushStatus();
   if(st!=='off'){ el.innerHTML=''; return; }
   el.innerHTML=`<div class="card" style="padding:14px 16px;margin-bottom:14px;display:flex;align-items:center;gap:13px;border:1px solid rgba(37,99,235,.35);background:linear-gradient(135deg,rgba(37,99,235,.06),rgba(37,99,235,.02))">
@@ -11046,7 +11059,7 @@ async function renderPushPromo(){
       <div style="font-size:12px;color:var(--t-2);margin-top:1px">Una notificación al día con lo que mueve tu dinero. Sin abrir la app.</div>
     </div>
     <button class="btn btn-primary btn-sm" style="flex-shrink:0" onclick="enableDailyPush().then(()=>renderPushPromo())">Activar</button>
-    <button onclick="try{localStorage.setItem('orbit_pushpromo_hide','1')}catch(e){};renderPushPromo()" style="background:none;border:0;color:var(--t-4);font-size:17px;padding:2px 4px;flex-shrink:0">×</button>
+    <button onclick="try{localStorage.setItem('orbit_pushpromo_hide','1')}catch(e){ _silenced('renderPushPromo', e); };renderPushPromo()" style="background:none;border:0;color:var(--t-4);font-size:17px;padding:2px 4px;flex-shrink:0">×</button>
   </div>`;
 }
 window.renderPushPromo=renderPushPromo;
@@ -11110,7 +11123,7 @@ window._pvSeen = {};
 async function track(event, props){
   try{ if(!sb || !user) return;
     await sb.from('app_events').insert({ user_id:user.id, event, props:props||{} });
-  }catch(e){}
+  }catch(e){ _silenced('track', e); }
 }
 window.track = track;
 async function pingSession(){
@@ -11137,7 +11150,7 @@ async function pingSession(){
       standalone, platform
     }});
     localStorage.setItem(k,'1');
-  }catch(e){}
+  }catch(e){ _silenced('pingSession', e); }
 }
 window.pingSession = pingSession;
 
@@ -11158,7 +11171,7 @@ if(!window._ftHook){
       const c = window._ftSeen[fn] = (window._ftSeen[fn]||0)+1;
       if(c>3) return; // máx 3 por feature y sesión, evita ruido
       track('feature_click', { f:fn, page:window._curPage||'' });
-    }catch(e){}
+    }catch(e){ _silenced('pingSession', e); }
   }, true);
 }
 
@@ -12252,7 +12265,7 @@ async function getFxRates() {
         return c.rates;
       }
     }
-  } catch {}
+  } catch(_e){ _silenced('getFxRates', _e); }
   
   // Fetch desde Frankfurter (datos oficiales del BCE)
   try {
@@ -12262,7 +12275,7 @@ async function getFxRates() {
       // d.rates = { USD: 1.08, GBP: 0.85, ... } — todas las tasas son "1 EUR = X moneda"
       const rates = { EUR: 1, ...d.rates };
       const obj = { ts: Date.now(), rates, date: d.date };
-      try { localStorage.setItem(FX_CACHE_KEY, JSON.stringify(obj)); } catch {}
+      try { localStorage.setItem(FX_CACHE_KEY, JSON.stringify(obj)); } catch(_e){ _silenced('getFxRates', _e); }
       _fxCache = obj;
       console.log('[FX] Tasas BCE cargadas:', d.date, Object.keys(rates).length, 'monedas');
       return rates;
@@ -12368,7 +12381,7 @@ async function fetchPrice(ticker, opts = {}) {
       const c = JSON.parse(cached);
       if (Date.now() - c.ts < PRICE_TTL) return c;
     }
-  } catch {}
+  } catch(_e){ _silenced('fetchPrice', _e); }
   
   // Auto-retry con sufijo ETF si falla
   const tryFetch = async (ticker) => {
@@ -12391,7 +12404,7 @@ async function fetchPrice(ticker, opts = {}) {
           date: d.datetime ? String(d.datetime).slice(0, 10) : (d.timestamp ? new Date(d.timestamp * 1000).toISOString().slice(0, 10) : null),
           ts: Date.now() 
         };
-        try { localStorage.setItem(cacheKey, JSON.stringify(result)); } catch {}
+        try { localStorage.setItem(cacheKey, JSON.stringify(result)); } catch(_e){ _silenced('tryFetch', _e); }
         return result;
       }
       
@@ -12448,9 +12461,9 @@ async function fetchPrice(ticker, opts = {}) {
           console.warn(`[cross-check] ${t}: TD=${tdResult.price} vs FH=${fh.price} (${(diff*100).toFixed(1)}%)`);
         }
         tdResult._crosschecked = true;
-        try { localStorage.setItem(cacheKey, JSON.stringify(tdResult)); } catch {}
+        try { localStorage.setItem(cacheKey, JSON.stringify(tdResult)); } catch(_e){ _silenced('tryFetch', _e); }
       }
-    } catch(e){}
+    } catch(e){ _silenced('tryFetch', e); }
     return tdResult;
   }
 
@@ -12504,7 +12517,7 @@ async function fetchPriceFinnhubExact(sym){
     if (!r.ok) return null;
     const d = await r.json();
     if (d && d.c && d.c > 0) return { ticker: sym, price: d.c, name: sym, currency: ccyFromSymbol(sym), source:'finnhub', date: d.t ? new Date(d.t*1000).toISOString().slice(0,10) : null, ts:Date.now() };
-  } catch(e){}
+  } catch(e){ _silenced('fetchPriceFinnhubExact', e); }
   return null;
 }
 window.fetchPriceFinnhubExact = fetchPriceFinnhubExact;
@@ -12516,7 +12529,7 @@ async function fetchPriceFinnhub(ticker) {
   try {
     const cached = JSON.parse(localStorage.getItem(cacheKey) || 'null');
     if (cached && Date.now() - cached.ts < PRICE_TTL) return cached;
-  } catch {}
+  } catch(_e){ _silenced('fetchPriceFinnhub', _e); }
   
   // Finnhub usa sufijos de bolsa para ETFs europeos. Probamos los más comunes.
   const candidates = ETF_SUFFIX_MAP[base]
@@ -12536,7 +12549,7 @@ async function fetchPriceFinnhub(ticker) {
           currency: ccyFromSymbol(sym), source: 'finnhub', finnhubSymbol: sym,
           date: d.t ? new Date(d.t * 1000).toISOString().slice(0, 10) : null, ts: Date.now()
         };
-        try { localStorage.setItem(cacheKey, JSON.stringify(result)); } catch {}
+        try { localStorage.setItem(cacheKey, JSON.stringify(result)); } catch(_e){ _silenced('fetchPriceFinnhub', _e); }
         console.log(`[Finnhub] ${base} → ${sym}: ${d.c}`);
         return result;
       }
@@ -12551,7 +12564,7 @@ async function fetchPriceFMP(ticker){
   if(!FMP_KEY) return null; // sin key configurada
   const sym = ticker.toUpperCase().trim(); // conservar sufijo (.DE, .L, .AS...) — FMP lo necesita para ETF europeos
   const cacheKey = PRICE_CACHE_PREFIX + 'FMP_' + sym;
-  try{ const c=JSON.parse(localStorage.getItem(cacheKey)||'null'); if(c && Date.now()-c.ts<PRICE_TTL) return c; }catch{}
+  try{ const c=JSON.parse(localStorage.getItem(cacheKey)||'null'); if(c && Date.now()-c.ts<PRICE_TTL) return c; }catch(_e){ _silenced('fetchPriceFMP', _e); }
   try{
     const url = `${FMP_BASE}/quote/${encodeURIComponent(sym)}?apikey=${FMP_KEY}`;
     const r = await fetch(url, { signal: AbortSignal.timeout(8000) });
@@ -12560,7 +12573,7 @@ async function fetchPriceFMP(ticker){
     const row = Array.isArray(d) ? d[0] : d;
     if(row && typeof row.price === 'number'){
       const result = { ticker:sym, price:row.price, name:row.name||sym, currency:ccyFromSymbol(sym), source:'FMP', date: row.timestamp ? new Date(row.timestamp*1000).toISOString().slice(0,10) : null, ts:Date.now() };
-      try{ localStorage.setItem(cacheKey, JSON.stringify(result)); }catch{}
+      try{ localStorage.setItem(cacheKey, JSON.stringify(result)); }catch(_e){ _silenced('fetchPriceFMP', _e); }
       return result;
     }
   }catch(e){ console.warn('[FMP]', sym, e.message); }
@@ -12576,7 +12589,7 @@ async function fetchHistoricalPrice(ticker, date, opts = {}) {
   try {
     const cached = localStorage.getItem(cacheKey);
     if (cached) return JSON.parse(cached);
-  } catch {}
+  } catch(_e){ _silenced('fetchHistoricalPrice', _e); }
   
   const tryFetch = async (ticker) => {
     try {
@@ -12601,7 +12614,7 @@ async function fetchHistoricalPrice(ticker, date, opts = {}) {
           date, 
           dateStr: v.datetime 
         };
-        try { localStorage.setItem(cacheKey, JSON.stringify(result)); } catch {}
+        try { localStorage.setItem(cacheKey, JSON.stringify(result)); } catch(_e){ _silenced('tryFetch', _e); }
         return result;
       }
       
@@ -12650,8 +12663,8 @@ async function refreshAllPrices(silent = true){
       try { await updateBolsaPricesForBlock(b.id, true); } catch(e){ console.warn('[refreshAllPrices]', b.id, e); }
     }
     // tras actualizar, snapshot del nuevo total y re-render del dashboard si estamos en él
-    try { await snapshot(true); } catch(e){}
-    if (window._curPage === 'dashboard') { try { renderDash(); } catch(e){} }
+    try { await snapshot(true); } catch(e){ _silenced('refreshAllPrices', e); }
+    if (window._curPage === 'dashboard') { try { renderDash(); } catch(e){ _silenced('refreshAllPrices', e); } }
     if (!silent) toast('✓ Precios actualizados');
   } finally { _pricesRefreshing = false; }
 }
@@ -12783,7 +12796,7 @@ function _inspoPrefs(){
 }
 function _saveInspoPrefs(p){
   const uid = user?.id || 'demo';
-  try{ localStorage.setItem(`inspo_prefs_${uid}`, JSON.stringify(p)); }catch{}
+  try{ localStorage.setItem(`inspo_prefs_${uid}`, JSON.stringify(p)); }catch(_e){ _silenced('_saveInspoPrefs', _e); }
 }
 // Registra interacción: 'open' (le interesó) o 'skip' (no)
 function inspoFeedback(tema, action){
@@ -12879,8 +12892,8 @@ function checkNominaReminder() {
   const doneKey = `nomina_done_${uid}_${monthKey}`;
   const todayKey = `nomina_shown_${uid}_${today.getFullYear()}_${today.getMonth()}_${day}`;
 
-  try { if (localStorage.getItem(doneKey)) return; } catch {}
-  try { if (localStorage.getItem(todayKey)) return; } catch {}
+  try { if (localStorage.getItem(doneKey)) return; } catch(_e){ _silenced('checkNominaReminder', _e); }
+  try { if (localStorage.getItem(todayKey)) return; } catch(_e){ _silenced('checkNominaReminder', _e); }
 
   // ¿Ya hay nómina registrada como documento este mes?
   const thisMonthNomina = docs.find(d => {
@@ -12888,13 +12901,13 @@ function checkNominaReminder() {
     const dDate = new Date(d.created_at || d.date);
     return dDate.getFullYear() === ny && dDate.getMonth() === nm;
   });
-  if (thisMonthNomina) { try { localStorage.setItem(doneKey, '1'); } catch {} return; }
+  if (thisMonthNomina) { try { localStorage.setItem(doneKey, '1'); } catch(_e){ _silenced('checkNominaReminder', _e); } return; }
 
   // ¿Ya está la nómina en el Excel de gastos de ese mes? (evitar doble conteo)
-  if (nominaInExcel(nm, ny)) { try { localStorage.setItem(doneKey, '1'); } catch {} return; }
+  if (nominaInExcel(nm, ny)) { try { localStorage.setItem(doneKey, '1'); } catch(_e){ _silenced('checkNominaReminder', _e); } return; }
 
   const lastNomina = docs.find(d => d.doc_type === 'nomina');
-  try { localStorage.setItem(todayKey, '1'); } catch {}
+  try { localStorage.setItem(todayKey, '1'); } catch(_e){ _silenced('checkNominaReminder', _e); }
   setTimeout(() => showNominaModal(doneKey, lastNomina), 2000);
 }
 
@@ -12990,7 +13003,7 @@ async function saveNomina(key, overlay) {
     }
   }
 
-  try { localStorage.setItem(key, '1'); } catch {}
+  try { localStorage.setItem(key, '1'); } catch(_e){ _silenced('saveNomina', _e); }
   overlay.remove();
   renderDash(); renderPatr(); renderSidebar(); renderDocs();
   snapshot();
@@ -13106,9 +13119,9 @@ function loadObjectives() {
       if (legacy && user?.email === 'pepevilarp@gmail.com') {
         saved = legacy;
         localStorage.setItem(_goalsLegacyKey(), legacy);
-        try { localStorage.removeItem(GOALS_KEY_LEGACY); } catch {}
+        try { localStorage.removeItem(GOALS_KEY_LEGACY); } catch(_e){ _silenced('loadObjectives', _e); }
       } else if (legacy) {
-        try { localStorage.removeItem(GOALS_KEY_LEGACY); } catch {}
+        try { localStorage.removeItem(GOALS_KEY_LEGACY); } catch(_e){ _silenced('loadObjectives', _e); }
       }
     }
     return saved ? JSON.parse(saved) : [];
@@ -13116,7 +13129,7 @@ function loadObjectives() {
 }
 
 function saveObjectives(objs) {
-  try { localStorage.setItem(_goalsLegacyKey(), JSON.stringify(objs)); } catch {}
+  try { localStorage.setItem(_goalsLegacyKey(), JSON.stringify(objs)); } catch(_e){ _silenced('saveObjectives', _e); }
 }
 
 function renderObjectives() {
@@ -13830,7 +13843,7 @@ Si no encuentras posiciones, responde: {"positions":[]}`
         errBody = errData.error?.message || errData.error || JSON.stringify(errData).slice(0, 200);
         errType = errData.error?.type || '';
       } catch {
-        try { errBody = await r.text(); errBody = errBody.slice(0, 200); } catch {}
+        try { errBody = await r.text(); errBody = errBody.slice(0, 200); } catch(_e){ _silenced('extractPositionsFromImage', _e); }
       }
       console.error('[extractPositionsFromImage] API error', r.status, errType, errBody);
       
@@ -14287,7 +14300,7 @@ async function tradeSymbolSearch(){
   const results = await searchSymbols(q);
   if(!results.length){
     // si no hay resultados de búsqueda, intentar como ticker exacto (comportamiento antiguo)
-    try{ return tradeLookup(); }catch(e){}
+    try{ return tradeLookup(); }catch(e){ _silenced('tradeSymbolSearch', e); }
     if(info) info.innerHTML = '<span style="color:var(--neg)">Sin resultados. Prueba el ticker exacto.</span>';
     return;
   }
@@ -14304,13 +14317,13 @@ window.tradeSymbolSearch = tradeSymbolSearch;
 function chooseSymbol(sym){
   const inp=document.getElementById('trade-ticker');
   if(inp){ inp.value=sym; }
-  try{ tradeLookup(); }catch(e){}
+  try{ tradeLookup(); }catch(e){ _silenced('chooseSymbol', e); }
 }
 window.chooseSymbol = chooseSymbol;
 
 function pickTradeTicker(tk){
   const inp = document.getElementById('trade-ticker');
-  if(inp){ inp.value = tk; try{ tradeLookup(); }catch(e){} }
+  if(inp){ inp.value = tk; try{ tradeLookup(); }catch(e){ _silenced('pickTradeTicker', e); } }
 }
 window.pickTradeTicker = pickTradeTicker;
 
@@ -14636,9 +14649,9 @@ async function placeSaleCash(cashId, amount, btnEl){
   pushUndo('blocks','cash de venta');
   const nv = (c.eur_value||c.value||0) + amount;
   c.value=nv; c.eur_value=nv; c.updated_at=new Date().toISOString();
-  try{ await saveBlockDB(c); }catch(e){}
-  try{ btnEl.closest('.overlay')?.remove(); }catch(e){}
-  try{ await snapshot(true); }catch(e){}
+  try{ await saveBlockDB(c); }catch(e){ _silenced('placeSaleCash', e); }
+  try{ btnEl.closest('.overlay')?.remove(); }catch(e){ _silenced('placeSaleCash', e); }
+  try{ await snapshot(true); }catch(e){ _silenced('placeSaleCash', e); }
   toastUndo(`✓ ${fE(amount)} añadidos a ${c.name}`);
   renderSidebar(); renderDash(); renderPatr();
 }
@@ -14899,7 +14912,7 @@ function renderProjection(){
     if(months.length){
       monthlySaving = months.reduce((s,m)=>s+((m.savings!=null)?m.savings:((m.totalIncome||0)-(m.totalExpense||0))),0)/months.length;
     }
-  } catch(e){}
+  } catch(e){ _silenced('renderProjection', e); }
   // rendimiento anual estimado por perfil de riesgo
   const profile = (window._userProfile?.risk_profile)||'moderado';
   const annualReturn = {conservador:0.03, moderado:0.05, agresivo:0.07}[profile] ?? 0.05;
@@ -14941,7 +14954,7 @@ window.renderProjection = renderProjection;
 function renderComprehensionHero(){
   let ins = window._latestInsights;
   if(!ins || !ins.length){
-    try{ const uid=user?.id||'demo'; const today=new Date().toISOString().slice(0,10); const c=JSON.parse(localStorage.getItem(`wealthos_insights_${uid}_${today}`)||'null'); if(c&&Array.isArray(c.insights)&&c.insights.length){ ins=c.insights; window._latestInsights=ins; } }catch(e){}
+    try{ const uid=user?.id||'demo'; const today=new Date().toISOString().slice(0,10); const c=JSON.parse(localStorage.getItem(`wealthos_insights_${uid}_${today}`)||'null'); if(c&&Array.isArray(c.insights)&&c.insights.length){ ins=c.insights; window._latestInsights=ins; } }catch(e){ _silenced('renderComprehensionHero', e); }
   }
   const head=`<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:2px">
       <div style="display:flex;align-items:center;gap:9px"><span style="width:7px;height:7px;border-radius:50%;background:var(--gold);box-shadow:0 0 0 4px var(--gold-bg)"></span><span style="font-size:11px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;color:var(--t-3)">Qué está pasando hoy</span></div>
@@ -14949,7 +14962,7 @@ function renderComprehensionHero(){
     </div>`;
   let list=[];
   if(ins&&ins.length){
-    const scored=ins.map(i=>{ let n=0; try{ n=(groundInsight(i).matched||[]).length; }catch(e){} return {i,n}; });
+    const scored=ins.map(i=>{ let n=0; try{ n=(groundInsight(i).matched||[]).length; }catch(e){ _silenced('renderComprehensionHero', e); } return {i,n}; });
     scored.sort((a,b)=>b.n-a.n);
     list=scored.slice(0,3).map(x=>x.i);
   }
@@ -14960,7 +14973,7 @@ function renderComprehensionHero(){
     </div>`;
   }
   const rows=list.map((it,idx)=>{
-    let aff=''; try{ aff=(groundInsight(it).matched||[]).slice(0,2).map(m=>m.label).join(', '); }catch(e){}
+    let aff=''; try{ aff=(groundInsight(it).matched||[]).slice(0,2).map(m=>m.label).join(', '); }catch(e){ _silenced('renderComprehensionHero', e); }
     const ri=window._latestInsights?window._latestInsights.indexOf(it):idx;
     return `<div style="display:flex;align-items:center;gap:10px;padding:9px 0;${idx<list.length-1?'border-bottom:1px solid var(--line)':''}">
       <div style="flex:1;min-width:0">
@@ -15029,7 +15042,7 @@ function renderDashTiles(){
   const key=expMonthKeyFor(ed, new Date().getFullYear(), mi);
   const items=key?((ed[key].items)||[]).filter(i=>!i.isIncome && (!/^\d{4}-\d{2}-\d{2}$/.test(String(i.date||'')) || String(i.date).startsWith(ym))):[];
   const spent=items.reduce((s,i)=>s+(+i.amount||0),0);
-  let budgets={}; try{ budgets=loadBudgets()||{}; }catch(e){}
+  let budgets={}; try{ budgets=loadBudgets()||{}; }catch(e){ _silenced('fmt1', e); }
   const bl=Object.entries(budgets).filter(([,v])=>+v>0);
   const lim=bl.reduce((s,[,v])=>s+(+v),0), spentB=bl.reduce((s,[c])=>s+items.filter(i=>i.category===c).reduce((x,i)=>x+(+i.amount||0),0),0);
   const gasS = lim ? (spentB<=lim ? `Te quedan ${fE(lim-spentB)} de tus límites` : `Te has pasado ${fE(spentB-lim)} de tus límites`) : `${items.length} movimiento${items.length===1?'':'s'} este mes`;
@@ -15288,7 +15301,7 @@ function renderGoalsList() {
   list.innerHTML = goals.map((g, i) => renderGoalCard(g, i)).join('');
   // Después de inyectar HTML, dibujar charts en cada uno
   goals.forEach((g, i) => drawGoalChart(g, i));
-  try{ checkGoalCelebration(); }catch(e){}
+  try{ checkGoalCelebration(); }catch(e){ _silenced('renderGoalsList', e); }
 }
 
 // Confeti de celebración (sin dependencias) — solo en cruces nuevos reales
@@ -15315,7 +15328,7 @@ function checkGoalCelebration(){
     localStorage.setItem(KEY, JSON.stringify(hit));
     if(localStorage.getItem(INIT) && fresh) celebrate();   // nunca en la 1ª carga
     localStorage.setItem(INIT,'1');
-  }catch(e){}
+  }catch(e){ _silenced('checkGoalCelebration', e); }
 }
 
 function renderGoalCard(g, idx) {
@@ -15667,7 +15680,7 @@ function openNewGoal() {
       ahorroMensualReal = Math.round(am.reduce((s,m)=>s+m.savings,0) / am.length);
       gastoMensualReal = Math.round(am.reduce((s,m)=>s+m.totalExpense,0) / am.length);
     }
-  } catch {}
+  } catch(_e){ _silenced('openNewGoal', _e); }
   
   const overlay = document.createElement('div');
   overlay.className = 'overlay';
@@ -16040,7 +16053,7 @@ async function loadTacticalCashOpps(forceRefresh = false) {
           return;
         }
       }
-    } catch {}
+    } catch(_e){ _silenced('loadTacticalCashOpps', _e); }
   }
   
   el.innerHTML = `<div style="padding:30px;text-align:center">
@@ -16124,7 +16137,7 @@ REGLAS:
       return;
     }
     
-    try { localStorage.setItem(CACHE_KEY, JSON.stringify({ ts: Date.now(), opps })); } catch {}
+    try { localStorage.setItem(CACHE_KEY, JSON.stringify({ ts: Date.now(), opps })); } catch(_e){ _silenced('loadTacticalCashOpps', _e); }
     renderCashOpps(opps, Date.now());
     
   } catch (e) {
@@ -16202,7 +16215,7 @@ async function loadTacticalMacroPlays(forceRefresh = false) {
           return;
         }
       }
-    } catch {}
+    } catch(_e){ _silenced('loadTacticalMacroPlays', _e); }
   }
   
   el.innerHTML = `<div style="padding:30px;text-align:center">
@@ -16234,7 +16247,7 @@ async function loadTacticalMacroPlays(forceRefresh = false) {
       image: a.image || null
     }));
     
-    try { localStorage.setItem(CACHE_KEY, JSON.stringify({ ts: Date.now(), plays })); } catch {}
+    try { localStorage.setItem(CACHE_KEY, JSON.stringify({ ts: Date.now(), plays })); } catch(_e){ _silenced('loadTacticalMacroPlays', _e); }
     renderMacroPlays(plays);
     return;
   } catch (e) {
@@ -16752,7 +16765,7 @@ async function analyzeDocumentById(docId) {
         const d = new Date(analysis.action_required.deadline);
         const days = Math.round((d - new Date()) / 86400000);
         if (days >= 0) toastMsg += ` · vence en ${days} días`;
-      } catch {}
+      } catch(_e){ _silenced('analyzeDocumentById', _e); }
     }
     toast(toastMsg);
     
@@ -16760,11 +16773,11 @@ async function analyzeDocumentById(docId) {
     renderDocs();
     // Refrescar timeline si está visible
     if (document.getElementById('p-timeline')?.classList.contains('on')) {
-      try { renderTimeline(); } catch {}
+      try { renderTimeline(); } catch(_e){ _silenced('analyzeDocumentById', _e); }
     }
     // Refrescar Dashboard si está visible (para coaching + KPIs)
     if (document.getElementById('p-dashboard')?.classList.contains('on')) {
-      try { renderDash(); } catch {}
+      try { renderDash(); } catch(_e){ _silenced('analyzeDocumentById', _e); }
     }
     
     // Si hay vista detalle abierta, refrescar
@@ -16837,7 +16850,7 @@ function showDocAnalysis(docId) {
       const today = new Date();
       daysLeft = Math.round((d - today) / 86400000);
       deadlineStr = d.toLocaleDateString('es-ES', { day:'numeric', month:'long', year:'numeric' });
-    } catch {}
+    } catch(_e){ _silenced('showDocAnalysis', _e); }
   }
   
   overlay.innerHTML = `
@@ -17483,7 +17496,7 @@ function renderTimelineEvent(ev) {
     try {
       const days = Math.round((new Date(ev.date) - new Date()) / 86400000);
       if (days >= 0) countdown = days === 0 ? 'hoy' : `en ${days} día${days===1?'':'s'}`;
-    } catch {}
+    } catch(_e){ _silenced('renderTimelineEvent', _e); }
   }
   
   const dateStr = ev.isProjection ? 'estimado'
@@ -17889,7 +17902,7 @@ function loadPerfFlows() {
   try { return JSON.parse(localStorage.getItem(perfFlowsKey())) || []; } catch { return []; }
 }
 function savePerfFlows(flows) {
-  try { localStorage.setItem(perfFlowsKey(), JSON.stringify(flows)); } catch {}
+  try { localStorage.setItem(perfFlowsKey(), JSON.stringify(flows)); } catch(_e){ _silenced('savePerfFlows', _e); }
 }
 
 function renderPerformance() {
@@ -18696,20 +18709,20 @@ Devuelve EXACTAMENTE este JSON sin markdown:
 }
 
 function saveAlerts() {
-  try { localStorage.setItem(alertsStateKey(), JSON.stringify({ ts: Date.now(), alerts: _alerts })); } catch {}
+  try { localStorage.setItem(alertsStateKey(), JSON.stringify({ ts: Date.now(), alerts: _alerts })); } catch(_e){ _silenced('saveAlerts', _e); }
 }
 function loadAlertsCache() {
   try {
     const c = JSON.parse(localStorage.getItem(alertsStateKey()) || 'null');
     if (c && Date.now() - c.ts < 12*3600000) { _alerts = c.alerts || []; return true; }
-  } catch {}
+  } catch(_e){ _silenced('loadAlertsCache', _e); }
   return false;
 }
 function getSeenAlerts() {
   try { return new Set(JSON.parse(localStorage.getItem(alertsSeenKey()) || '[]')); } catch { return new Set(); }
 }
 function markAlertsSeen() {
-  try { localStorage.setItem(alertsSeenKey(), JSON.stringify(_alerts.map(a=>a.id))); } catch {}
+  try { localStorage.setItem(alertsSeenKey(), JSON.stringify(_alerts.map(a=>a.id))); } catch(_e){ _silenced('markAlertsSeen', _e); }
   updateBellBadge();
 }
 
@@ -18811,7 +18824,7 @@ window.addEventListener('beforeinstallprompt', (e) => {
     if (!dismissed && !window.matchMedia('(display-mode: standalone)').matches) {
       setTimeout(showInstallBanner, 6000);
     }
-  } catch {}
+  } catch(_e){ _silenced('closeHandler', _e); }
 });
 
 function showInstallBanner() {
@@ -18835,18 +18848,18 @@ function showInstallBanner() {
 async function triggerInstall() {
   if (!_deferredInstallPrompt) { dismissInstallBanner(); return; }
   _deferredInstallPrompt.prompt();
-  try { await _deferredInstallPrompt.userChoice; } catch {}
+  try { await _deferredInstallPrompt.userChoice; } catch(_e){ _silenced('triggerInstall', _e); }
   _deferredInstallPrompt = null;
   dismissInstallBanner();
 }
 
 function dismissInstallBanner() {
   document.getElementById('install-banner')?.remove();
-  try { localStorage.setItem('wealthos_install_dismissed', '1'); } catch {}
+  try { localStorage.setItem('wealthos_install_dismissed', '1'); } catch(_e){ _silenced('dismissInstallBanner', _e); }
 }
 
 function _bootThenReveal(){
-  var done=function(){ try{ window.Splash && Splash.dataReady(); }catch(e){} };
+  var done=function(){ try{ window.Splash && Splash.dataReady(); }catch(e){ _silenced('done', e); } };
   try { boot().then(done, done); } catch(e){ done(); }
 }
 if (document.readyState !== 'loading') _bootThenReveal();
@@ -18961,7 +18974,7 @@ function openMov(tab){
   $('mv-err').textContent = '';
   setMovTab(tab || 'gasto');
   $('m-mov').style.display = 'flex';
-  setTimeout(() => { try { (_movTab === 'operacion' ? $('mv-ticker') : _movTab === 'saldo' ? $('mv-saldo') : $('mv-importe')).focus(); } catch(e){} }, 50);
+  setTimeout(() => { try { (_movTab === 'operacion' ? $('mv-ticker') : _movTab === 'saldo' ? $('mv-saldo') : $('mv-importe')).focus(); } catch(e){ _silenced('openMov', e); } }, 50);
 }
 function setMovTab(t){
   _movTab = t;
@@ -19003,7 +19016,7 @@ async function saveMov(){
     if (r.ok && j.ok) {
       closeM('m-mov');
       toast(String(j.message || 'Guardado').replace(/\s?\((?:sh-|app-)?[0-9a-f-]{16,}\)/gi, ''), 'ok');
-      try { if (typeof refreshFromCloud === 'function') await refreshFromCloud(); } catch(e){}
+      try { if (typeof refreshFromCloud === 'function') await refreshFromCloud(); } catch(e){ _silenced('saveMov', e); }
     } else {
       err.textContent = j.message || `No se ha podido guardar (${r.status}).`;   // el id se mantiene: reintentar no duplica
     }

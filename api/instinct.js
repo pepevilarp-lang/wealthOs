@@ -1630,7 +1630,7 @@ async function generateInsights(uid, blocks) {
   const key = insightsKey(uid, utcDay(0));
   await putKV(uid, key, { ts: Date.now(), insights, origen: 'servidor' });
   // Limpieza: solo se guardan los últimos 7 días
-  try { await sb(`user_kv?user_id=eq.${uid}&key=like.${q(`wealthos_insights_${uid}_*`)}&key=lt.${q(insightsKey(uid, utcDay(-7)))}`, { method: 'DELETE' }); } catch {}
+  try { await sb(`user_kv?user_id=eq.${uid}&key=like.${q(`wealthos_insights_${uid}_*`)}&key=lt.${q(insightsKey(uid, utcDay(-7)))}`, { method: 'DELETE' }); } catch (e) { console.error('[noticias] limpieza de días antiguos:', e.message); }
   return { insights };
 }
 async function actNewsToday(uid, b0) {
