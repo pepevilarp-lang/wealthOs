@@ -1,3 +1,4 @@
+import { sessionUser } from './_lib/session.js';
 // /api/health.js — Endpoint de diagnóstico para verificar que todo funciona
 // Comprueba que la petición viene de la propia app. Los navegadores envían la cabecera
 // Origin en las peticiones POST: si viene de otra web, se rechaza. Se compara con la cabecera
@@ -30,7 +31,9 @@ export default async function handler(req, res) {
       VAPID_PUBLIC: process.env.VAPID_PUBLIC ? '✓ present' : '✗ falta (no se pueden activar notificaciones)',
       VAPID_PRIVATE: process.env.VAPID_PRIVATE ? '✓ present' : '✗ falta (no se pueden enviar notificaciones)',
       NEWS_API_KEY: process.env.NEWS_API_KEY ? '✓ present' : '✗ falta (sin noticias)',
-      FINNHUB_KEY: process.env.FINNHUB_KEY ? '✓ present' : '✗ falta (el servidor no puede preparar las noticias del día si no abres la app)',
+      FINNHUB_KEY: process.env.FINNHUB_KEY ? '✓ present' : '✗ falta (sin precios de respaldo ni noticias de tus posiciones)',
+      TWELVEDATA_KEY: process.env.TWELVEDATA_KEY ? '✓ present' : '✗ falta (sin precios de bolsa: /api/market)',
+      FMP_KEY: process.env.FMP_KEY ? '✓ present' : '✗ falta (sin respaldo de precios para ETF y materias primas)',
       GROQ_API_KEY: process.env.GROQ_API_KEY
         ? '✓ present'
         : '✗ MISSING — añade GROQ_API_KEY en Vercel Settings → Environment Variables',
@@ -38,8 +41,12 @@ export default async function handler(req, res) {
     groq: { tested: false, ok: false, error: null, model: null, response: null },
   };
 
-  // Test live Groq call
-  if (process.env.GROQ_API_KEY) {
+  // Prueba real de Groq: solo con sesión iniciada (cada prueba gasta crédito)
+  let uid = null;
+  try { uid = await sessionUser(req); } catch (e) { checks.session_error = e.message; }
+  if (process.env.GROQ_API_KEY && !uid) {
+    checks.groq.error = 'Prueba de Groq omitida: requiere sesión de Orbit';
+  } else if (process.env.GROQ_API_KEY) {
     try {
       const r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
         method: 'POST',
@@ -74,6 +81,6 @@ export default async function handler(req, res) {
     checks.groq.error = 'No API key configured';
   }
 
-  const allOk = process.env.GROQ_API_KEY && checks.groq.ok;
+  const allOk = process.env.GROQ_API_KEY && (checks.groq.ok || !uid);
   return res.status(allOk ? 200 : 503).json(checks);
 }

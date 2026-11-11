@@ -1,7 +1,8 @@
 // /api/groq.js — Proxy para Groq API (con anti-spam + retry 429)
 // Variable de entorno requerida: GROQ_API_KEY
-// Protecciones: solo peticiones desde la propia app, lista cerrada de modelos,
-// tope de tokens, traducción de modelos retirados. Pendiente: exigir la sesión de Supabase del usuario.
+// Protecciones: sesión de Supabase obligatoria, solo peticiones desde la propia app, lista cerrada de
+// modelos, tope de tokens y traducción de modelos retirados.
+import { sessionUser } from './_lib/session.js';
 // Comprueba que la petición viene de la propia app. Los navegadores envían la cabecera
 // Origin en las peticiones POST: si viene de otra web, se rechaza. Se compara con la cabecera
 // host y con x-forwarded-host, porque detrás del proxy de Vercel puede llegar en cualquiera.
@@ -42,7 +43,7 @@ const ALLOWED_MODELS = new Set([
 const MAX_TOKENS_CAP = 4000;   // la app pide como máximo 3500
 const MAX_MESSAGES = 60;
 
-const lastRequestMap = new Map(); // 🔒 cooldown por IP
+const lastRequestMap = new Map(); // cooldown por usuario
 
 export default async function handler(req, res) {
   // CORS preflight
@@ -56,6 +57,12 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: { message: 'Method not allowed. Use POST.' } });
   }
 
+  // Sin sesión no hay IA: así nadie puede gastar el crédito de Groq llamando directamente a esta URL.
+  let uid = null;
+  try { uid = await sessionUser(req); }
+  catch (e) { return res.status(500).json({ error: { message: e.message, type: 'server_config' } }); }
+  if (!uid) return res.status(401).json({ error: { message: 'Inicia sesión en Orbit para usar la IA.', type: 'no_session' } });
+
   const apiKey = process.env.GROQ_API_KEY;
   if (!apiKey) {
     return res.status(500).json({
@@ -66,14 +73,9 @@ export default async function handler(req, res) {
     });
   }
 
-  // 🔒 detectar IP del usuario
-  const ip =
-    req.headers['x-forwarded-for']?.split(',')[0] ||
-    req.socket?.remoteAddress ||
-    'unknown';
 
   const now = Date.now();
-  const last = lastRequestMap.get(ip) || 0;
+  const last = lastRequestMap.get(uid) || 0;
 
   // ⛔ cooldown: 5 segundos entre requests por IP
   const COOLDOWN_MS = 5000;
@@ -87,7 +89,7 @@ export default async function handler(req, res) {
     });
   }
 
-  lastRequestMap.set(ip, now);
+  lastRequestMap.set(uid, now);
 
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 

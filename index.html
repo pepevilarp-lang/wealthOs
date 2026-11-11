@@ -1082,17 +1082,35 @@ const SB_URL = 'https://rjjfuzeapeasgdobnwbp.supabase.co';
 const SB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJqamZ1emVhcGVhc2dkb2Jud2JwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc4MjU4MjAsImV4cCI6MjA5MzQwMTgyMH0.o0qZIxro_1PMM_o1PCFnrpWSoiMqiab7pWyOBZlSjRE';
 const AI = '/api/groq';
 
-// TwelveData API — Precios en tiempo real
-const TD_API_KEY = '7f9edbc1ab3343a5949ddde32bb47c6a'; // Free: 8 req/min, 800/día
-const TD_BASE = 'https://api.twelvedata.com';
+// Datos de mercado: SIEMPRE a través de /api/market, que pone la clave en el servidor (principio 5).
+// Las URLs de la app siguen la forma `${TD_BASE}/quote?symbol=X&apikey=${TD_API_KEY}`; el proxy ignora
+// el apikey/token que llegue del navegador. Las constantes *_KEY ya no son claves: solo marcan "disponible".
+const TD_API_KEY = 'servidor';
+const TD_BASE = '/api/market?p=td&u=';
 const PRICE_TTL = 15 * 60 * 1000; // 15 min cache
+const FINNHUB_KEY = 'servidor';
+const FINNHUB_BASE = '/api/market?p=fh&u=';
+const FMP_KEY = 'servidor';
+const FMP_BASE = '/api/market?p=fmp&u=';
 
-// Finnhub API — Noticias financieras reales (free: 60 req/min)
-const FINNHUB_KEY = 'd8emtghr01qth3ci8tq0d8emtghr01qth3ci8tqg';
-const FINNHUB_BASE = 'https://finnhub.io/api/v1';
-// FMP: backup para ETF y materias primas (tier gratis = precios EOD, 250/día). Pega tu key aquí:
-const FMP_KEY = '1FW3lRMOeW6x6xUe0DWC1bb9xs4sHF2k'; // financialmodelingprep.com (free: 250/día, EOD)
-const FMP_BASE = 'https://financialmodelingprep.com/api/v3';
+// Las llamadas a /api/groq y /api/market llevan la sesión del usuario: el servidor rechaza las que no la traen.
+(function () {
+  const nativeFetch = window.fetch.bind(window);
+  window.fetch = async function (input, init) {
+    const url = typeof input === 'string' ? input : (input && input.url) || '';
+    if (/^\/api\/(groq|market)\b/.test(url) && typeof sb !== 'undefined' && sb && sb.auth) {
+      const { data, error } = await sb.auth.getSession();
+      if (error) console.warn('[sesión] No se pudo leer la sesión para', url, error);
+      const tok = data && data.session && data.session.access_token;
+      if (tok) {
+        const headers = new Headers((init && init.headers) || (typeof input !== 'string' ? input.headers : undefined));
+        headers.set('Authorization', 'Bearer ' + tok);
+        init = { ...(init || {}), headers };
+      }
+    }
+    return nativeFetch(input, init);
+  };
+})();
 
 // ─── Logos de empresa/activo (vía dominio, servicio gratuito sin key) ───
 const TICKER_DOMAINS = {
