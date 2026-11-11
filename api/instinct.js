@@ -710,11 +710,45 @@ export function recomputePE(b, txs) {
     b.value = b.eur_value = Math.max(0, r2(v));
   }
 }
+// TIR (XIRR) de la posición: calls negativos y distribuciones positivas en su fecha, y el valor actual
+// como si se cobrara hoy (o a la fecha del NAV si no hay movimientos posteriores). Solo es exacta si TODOS los
+// flujos tienen fecha: si hay saldo inicial sin fechar (called_base/distributed_base), no se calcula.
+export function xirr(flows) {
+  const fl = flows.filter(f => f.amount && isFinite(f.amount)).map(f => ({ t: Date.parse(f.date + 'T00:00:00Z') / 864e5 / 365, a: f.amount }));
+  if (fl.length < 2 || !fl.some(f => f.a < 0) || !fl.some(f => f.a > 0)) return null;
+  const t0 = Math.min(...fl.map(f => f.t));
+  const npv = (r) => fl.reduce((s, f) => s + f.a / Math.pow(1 + r, f.t - t0), 0);
+  let lo = -0.9999, hi = 10, flo = npv(lo), fhi = npv(hi);
+  if (!isFinite(flo) || !isFinite(fhi) || flo * fhi > 0) return null;
+  for (let i = 0; i < 200; i++) {               // bisección: lenta pero siempre converge si hay cambio de signo
+    const mid = (lo + hi) / 2, fm = npv(mid);
+    if (Math.abs(fm) < 1e-9 || hi - lo < 1e-10) return mid;
+    if (fm * flo < 0) { hi = mid; } else { lo = mid; flo = fm; }
+  }
+  return (lo + hi) / 2;
+}
+export function peIRR(b, txs, today) {
+  const ex = (b && b.extra) || {};
+  if ((Number(ex.called_base) || 0) > 0.005 || (Number(ex.distributed_base) || 0) > 0.005)
+    return { irr: null, reason: 'hay importes iniciales sin fecha: registra los capital calls y distribuciones con su fecha' };
+  const flows = (txs || []).filter(t => t.kind === 'call' || t.kind === 'distribution')
+    .map(t => ({ date: String(t.date).slice(0, 10), amount: (t.kind === 'call' ? -1 : 1) * (Number(t.amount) || 0) }));
+  const value = Number(b.eur_value || b.value) || 0;
+  const lastFlow = flows.reduce((m, f) => f.date > m ? f.date : m, '');
+  const valueDate = (typeof ex.nav_official === 'number' && ex.nav_date && ex.nav_date >= lastFlow) ? ex.nav_date : (today || madridToday());
+  if (value > 0) flows.push({ date: valueDate, amount: value });
+  const r = xirr(flows);
+  if (r === null) return { irr: null, reason: 'faltan flujos con fecha' };
+  const first = flows.reduce((m, f) => (!m || f.date < m) ? f.date : m, null);
+  const years = (Date.parse(valueDate) - Date.parse(first)) / 864e5 / 365;
+  return { irr: r, value_date: valueDate, years, short: years < 1 };   // con menos de un año, la TIR anualizada exagera
+}
 function peLine(b) {
   const ex = b.extra || {}, called = C(ex.called), dist = C(ex.distributed), val = C(b.eur_value || b.value), comm = C(ex.committed);
   const m = (x) => called > 0 ? (x / called).toFixed(2).replace('.', ',') + 'x' : '—';
   return { called, dist, val, comm, pending: Math.max(0, comm - called),
-    text: `Comprometido ${eur(comm)} · desembolsado ${eur(called)}${comm ? ` (${pct(called, comm)}%)` : ''} · pendiente ${eur(Math.max(0, comm - called))} · distribuido ${eur(dist)} · valor ${eur(val)} · TVPI ${m(dist + val)} · DPI ${m(dist)} · RVPI ${m(val)}` };
+    text: `Comprometido ${eur(comm)} · desembolsado ${eur(called)}${comm ? ` (${pct(called, comm)}%)` : ''} · pendiente ${eur(Math.max(0, comm - called))} · distribuido ${eur(dist)} · valor ${eur(val)} · TVPI ${m(dist + val)} · DPI ${m(dist)} · RVPI ${m(val)}`
+      + (b._irr && b._irr.irr !== null ? ` · TIR ${(b._irr.irr * 100).toFixed(1).replace('.', ',')}%${b._irr.short ? ' (menos de 1 año: poco significativa)' : ''}` : '') };
 }
 
 async function actPeFlow(uid, b0, today, kind) {
@@ -777,8 +811,14 @@ async function actPeStatus(uid, b0) {
   if (!list) return assetNotFound(target, b0.asset || b0.fund, pes);
   if (!list.length) return ok('No tienes inversiones de private equity.', {});
   const lines = [];
-  for (const b of list) { recomputePE(b, await getTxs(uid, b.id)); lines.push(`*${b.name}*\n${peLine(b).text}`); }
-  return ok(lines.join('\n\n'), {});
+  const out = [];
+  for (const b of list) {
+    const txs = await getTxs(uid, b.id);
+    recomputePE(b, txs); b._irr = peIRR(b, txs);
+    lines.push(`*${b.name}*\n${peLine(b).text}${b._irr.irr === null ? `\nTIR: no calculable (${b._irr.reason}).` : ''}`);
+    out.push({ name: b.name, irr: b._irr.irr, irr_reason: b._irr.reason || null, value_date: b._irr.value_date || null });
+  }
+  return ok(lines.join('\n\n'), { funds: out });
 }
 
 // ── Lista, alta, actualización y archivo de activos ──

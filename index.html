@@ -3494,7 +3494,8 @@ function renderPESection(b) {
       <div class="multi"><div class="multi-v gd">${tvpi?fN(tvpi)+'x':'—'}</div><div class="multi-l">TVPI</div><div class="multi-s">${posTvpi!=null?'Tu posición':'Total Value to Paid-In'}</div>${fundTag(ex.tvpi,posTvpi)}</div>
       <div class="multi"><div class="multi-v up">${dpi!=null?fN(dpi)+'x':'—'}</div><div class="multi-l">DPI</div><div class="multi-s">${posDpi!=null?'Tu posición':'Distributed to Paid-In'}</div>${fundTag(ex.dpi,posDpi)}</div>
       <div class="multi"><div class="multi-v">${rvpi!=null?fN(rvpi)+'x':'—'}</div><div class="multi-l">RVPI</div><div class="multi-s">${posRvpi!=null?'Tu posición':'Residual to Paid-In'}</div>${fundTag(ex.rvpi,posRvpi)}${typeof ex.nav_official==='number'&&ex.nav_date?`<div class="multi-s" style="opacity:.75">Valor: último NAV ${fE(ex.nav_official)} (${fDlong(ex.nav_date)}) + movimientos posteriores</div>`:''}</div>
-      <div class="multi"><div class="multi-v ${irr>0?'up':irr<0?'dn':''}">${irr!=null?irr.toFixed(1)+'%':'—'}</div><div class="multi-l">IRR neto</div><div class="multi-s">Tasa interna de retorno</div></div>
+      ${(() => { const pi = pePositionIRR(b); const v = pi.irr != null ? pi.irr * 100 : null;
+        return `<div class="multi"><div class="multi-v ${v>0?'up':v<0?'dn':''}">${v!=null?v.toFixed(1).replace('.',',')+'%':'—'}</div><div class="multi-l">TIR</div><div class="multi-s">${v!=null?(pi.short?'Tu posición · menos de 1 año':'Tu posición'):'No calculable: '+escH(pi.reason)}</div>${irr!=null&&isFinite(+irr)?`<div class="multi-s" style="color:var(--t-4)">Fondo (informe): ${(+irr).toFixed(1).replace('.',',')}%</div>`:''}</div>`; })()}
     </div>
 
     <div class="section-h">Compromisos & capital</div>
@@ -11641,6 +11642,36 @@ function _sumTx(blockId, kind, afterDate, uptoDate){
     .reduce((a, t) => a + (Number(t.amount) || 0), 0);
 }
 function _dayBefore(iso){ const d = new Date(iso + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() - 1); return d.toISOString().slice(0,10); }
+// TIR (XIRR) de TU posición: mismos cálculos que api/instinct.js (xirr, peIRR) y las mismas pruebas
+// (tests/test-tir.mjs). Calls negativos, distribuciones positivas, valor actual a la fecha del NAV o de hoy.
+function xirrFlows(flows){
+  const fl = flows.filter(f => f.amount && isFinite(f.amount)).map(f => ({ t: Date.parse(f.date + 'T00:00:00Z') / 864e5 / 365, a: f.amount }));
+  if (fl.length < 2 || !fl.some(f => f.a < 0) || !fl.some(f => f.a > 0)) return null;
+  const t0 = Math.min(...fl.map(f => f.t));
+  const npv = (r) => fl.reduce((s, f) => s + f.a / Math.pow(1 + r, f.t - t0), 0);
+  let lo = -0.9999, hi = 10, flo = npv(lo), fhi = npv(hi);
+  if (!isFinite(flo) || !isFinite(fhi) || flo * fhi > 0) return null;
+  for (let i = 0; i < 200; i++) {
+    const mid = (lo + hi) / 2, fm = npv(mid);
+    if (Math.abs(fm) < 1e-9 || hi - lo < 1e-10) return mid;
+    if (fm * flo < 0) hi = mid; else { lo = mid; flo = fm; }
+  }
+  return (lo + hi) / 2;
+}
+function pePositionIRR(b){
+  const ex = (b && b.extra) || {};
+  if ((+ex.called_base || 0) > 0.005 || (+ex.distributed_base || 0) > 0.005) return { irr: null, reason: 'hay importes iniciales sin fecha' };
+  const flows = (txs || []).filter(t => t.block_id == b.id && (t.kind === 'call' || t.kind === 'distribution'))
+    .map(t => ({ date: String(t.date).slice(0, 10), amount: (t.kind === 'call' ? -1 : 1) * (+t.amount || 0) }));
+  const value = +(b.eur_value || b.value) || 0;
+  const lastFlow = flows.reduce((m, f) => f.date > m ? f.date : m, '');
+  const valueDate = (typeof ex.nav_official === 'number' && ex.nav_date && ex.nav_date >= lastFlow) ? ex.nav_date : localISODate();
+  if (value > 0) flows.push({ date: valueDate, amount: value });
+  const r = xirrFlows(flows);
+  if (r === null) return { irr: null, reason: 'faltan flujos con fecha' };
+  const first = flows.reduce((m, f) => (!m || f.date < m) ? f.date : m, null);
+  return { irr: r, short: (Date.parse(valueDate) - Date.parse(first)) / 864e5 < 365 };
+}
 function recomputePE(b){
   if (!b || b.type !== 'pe') return false;
   const ex = b.extra = b.extra || {};
