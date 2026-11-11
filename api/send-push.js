@@ -15,13 +15,14 @@ export default async function handler(req, res) {
 
   webpush.setVapidDetails(process.env.VAPID_SUBJECT || 'mailto:hola@orbit.app', process.env.VAPID_PUBLIC, process.env.VAPID_PRIVATE);
 
-  const subsRes = await fetch(`${SU}/rest/v1/push_subscriptions?select=endpoint,subscription,name`, {
+  const subsRes = await fetch(`${SU}/rest/v1/push_subscriptions?select=endpoint,subscription,name&pref_daily=not.is.false`, {
     headers: { apikey: SR, Authorization: `Bearer ${SR}` }
   });
   const rows = await subsRes.json();
   if (!Array.isArray(rows)) return res.status(500).json({ error: 'No se pudieron leer suscripciones', detail: rows });
 
-  let sent = 0, removed = 0;
+  let sent = 0, removed = 0, failed = 0;
+  const errors = [];
   await Promise.all(rows.map(async (row) => {
     try {
       // Solo nombre real de pila. Si parece un email o usuario técnico, no lo usamos.
@@ -37,12 +38,17 @@ export default async function handler(req, res) {
     } catch (err) {
       if (err && (err.statusCode === 404 || err.statusCode === 410)) {
         removed++;
-        await fetch(`${SU}/rest/v1/push_subscriptions?endpoint=eq.${encodeURIComponent(row.endpoint)}`, {
+        const d = await fetch(`${SU}/rest/v1/push_subscriptions?endpoint=eq.${encodeURIComponent(row.endpoint)}`, {
           method: 'DELETE', headers: { apikey: SR, Authorization: `Bearer ${SR}` }
         });
+        if (!d.ok) console.error('[send-push] no se pudo borrar una suscripción caducada:', d.status);
+      } else {
+        failed++;
+        errors.push(String((err && (err.statusCode || err.message)) || err).slice(0, 120));
+        console.error('[send-push] envío fallido:', err && (err.statusCode || err.message));
       }
     }
   }));
 
-  res.status(200).json({ ok: true, sent, removed, total: rows.length });
+  res.status(failed && !sent ? 502 : 200).json({ ok: failed === 0, sent, removed, failed, errors: errors.slice(0, 5), total: rows.length });
 }
