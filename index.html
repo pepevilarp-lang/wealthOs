@@ -3548,10 +3548,14 @@ function recalcBolsaValue(b) {
     }
     const nativeCcy = p.priceCurrency || p.currency || 'EUR';
     const marketNative = p.lastPrice && p.qty ? p.lastPrice * p.qty : (p.valueNative || 0);
-    const marketEur = nativeCcy === 'EUR' ? marketNative : (convertFxSync(marketNative, nativeCcy, 'EUR') ?? marketNative);
+    let marketEur = nativeCcy === 'EUR' ? marketNative : convertFxSync(marketNative, nativeCcy, 'EUR');
+    if (marketEur == null) {   // sin tipo de cambio: el último valor en euros calculado, nunca divisa sumada como euros
+      console.error('[valor bolsa] sin tipo de cambio para', p.ticker, nativeCcy);
+      marketEur = +p.value || 0;
+    }
     totalEur += marketEur;
   });
-  return Math.round(totalEur);
+  return Math.round(totalEur * 100) / 100;
 }
 
 // Sincroniza b.eur_value/b.value con el valor real de las posiciones y persiste
@@ -3648,9 +3652,9 @@ function renderBolsaSection(b) {
     const marketNative = p.lastPrice && p.qty ? p.lastPrice * p.qty : (p.valueNative || 0);
     const costNative = p.entry && p.qty ? p.entry * p.qty : 0;
     
-    // Convertir a EUR (con tasas en caché — devuelve null si no hay caché, fallback a nativo)
-    const marketEur = nativeCcy === 'EUR' ? marketNative : (convertFxSync(marketNative, nativeCcy, 'EUR') ?? marketNative);
-    const costEur = costNative === 0 ? 0 : (nativeCcy === 'EUR' ? costNative : (convertFxSync(costNative, nativeCcy, 'EUR') ?? costNative));
+    // Convertir a EUR con los tipos del BCE guardados. Sin tipo: último valor en euros; el coste queda fuera (sin P&L)
+    const marketEur = nativeCcy === 'EUR' ? marketNative : (convertFxSync(marketNative, nativeCcy, 'EUR') ?? (+p.value || 0));
+    const costEur = costNative === 0 ? 0 : (nativeCcy === 'EUR' ? costNative : (convertFxSync(costNative, nativeCcy, 'EUR') ?? NaN));
     
     // P&L en EUR
     const pnl = costEur > 0 && marketEur > 0 ? marketEur - costEur : null;
@@ -3817,7 +3821,7 @@ function renderBolsaSection(b) {
                       </td>
                       <td class="r mono">${isRobo ? '<span style="color:var(--t-4)">—</span>' : (p.qty || '—')}</td>
                       <td class="r mono">${isRobo ? (p.invested ? fE(p.invested) : '—') : (p.entry ? `${p.entry.toFixed(2)} ${p.displayCurrency||'EUR'}` : '—')}</td>
-                      <td class="r mono" style="color:var(--gold)">${isRobo ? '<span style="color:var(--t-4)">—</span>' : (p.lastPrice ? `${p.lastPrice.toFixed(2)} ${p.displayCurrency||'EUR'}` : '—')}</td>
+                      <td class="r mono" style="color:var(--gold)">${isRobo ? '<span style="color:var(--t-4)">—</span>' : (p.lastPrice ? `${p.lastPrice.toFixed(2)} ${escH(p.displayCurrency||p.priceCurrency||'EUR')}${p.price_date ? `<div style="font-size:9.5px;font-family:var(--sans);color:${p.price_stale?'var(--neg)':'var(--t-4)'}" title="${escH(p.price_error||'')}">${p.price_stale?'⚠ precio del ':''}${escH(p.price_date)} · ${escH(p.price_source||'')}</div>` : ''}` : '—')}</td>
                       <td class="r mono">${p.market ? fE(p.market) : '—'}${!isRobo && p.displayCurrency && p.displayCurrency !== 'EUR' && p.marketNative ? `<br><span style="font-size:9.5px;color:var(--t-4)">${p.marketNative.toFixed(0)} ${p.displayCurrency}</span>` : ''}</td>
                       <td class="r" style="color:${pnlColor}">
                         ${p.pnl !== null ? `${p.pnl>=0?'+':''}${fE(p.pnl)}<br><span style="font-size:10px">${p.pnlPct>=0?'+':''}${p.pnlPct.toFixed(1)}%</span>` : '—'}
@@ -3843,7 +3847,7 @@ function renderBolsaSection(b) {
             </tfoot>
           </table>
         </div>
-        ${ex.lastPriceUpdate ? `<div style="padding:8px 14px;font-size:10px;color:var(--t-4);border-top:1px solid var(--line-2)">Precios actualizados: ${fD(ex.lastPriceUpdate)}</div>` : ''}
+        ${ex.lastPriceUpdate ? `<div style="padding:8px 14px;font-size:10px;color:var(--t-4);border-top:1px solid var(--line-2)">Precios actualizados: ${fD(ex.lastPriceUpdate)}</div>` : ''}${(ex.priceErrors||[]).length ? `<div style="padding:8px 14px;font-size:10px;color:var(--neg);border-top:1px solid var(--line-2)">⚠ Sin precio nuevo (se muestra el anterior): ${ex.priceErrors.map(escH).join(', ')}</div>` : ''}
       ` : `
         <div class="empty" style="padding:24px">
           <div class="empty-ic">📊</div>
@@ -10211,9 +10215,9 @@ function buildContext(includeDocText = false) {
         stocks.forEach(p => {
           const ccy = p.priceCurrency || p.currency || 'EUR';
           const marketNative = p.lastPrice && p.qty ? p.lastPrice * p.qty : 0;
-          const marketEur = p.value || (ccy === 'EUR' ? marketNative : (convertFxSync(marketNative, ccy, 'EUR') ?? marketNative));
+          const marketEur = p.value || (ccy === 'EUR' ? marketNative : (convertFxSync(marketNative, ccy, 'EUR') ?? (+p.value || 0)));
           const costNative = p.entry && p.qty ? p.entry * p.qty : 0;
-          const costEur = ccy === 'EUR' ? costNative : (convertFxSync(costNative, ccy, 'EUR') ?? costNative);
+          const costEur = ccy === 'EUR' ? costNative : (convertFxSync(costNative, ccy, 'EUR') ?? NaN);
           const pnlEur = costEur > 0 && marketEur > 0 ? marketEur - costEur : null;
           const pnlPct = costNative > 0 && marketNative > 0 ? ((marketNative - costNative) / costNative * 100) : null;
           const weight = totalBlock > 0 ? (marketEur / totalBlock * 100).toFixed(1) : 0;
@@ -12267,15 +12271,28 @@ async function getFxRates() {
     console.warn('[FX] Error obteniendo tasas:', e.message);
   }
   
-  // Fallback con tasas hardcoded de emergencia (no es ideal pero evita romper la app)
-  console.warn('[FX] Usando tasas fallback');
-  return { EUR: 1, USD: 1.08, GBP: 0.85, CHF: 0.96, JPY: 165, CAD: 1.48, AUD: 1.63, MXN: 19.5 };
+  // Sin tipos inventados (principio 1): el último tipo del BCE que se obtuvo, con su fecha y avisando.
+  try {
+    const old = JSON.parse(localStorage.getItem(FX_CACHE_KEY) || 'null');
+    if (old && old.rates) {
+      _fxCache = { ...old, stale: true };
+      if (!window._fxStaleWarned) { window._fxStaleWarned = true; try { toast(`⚠ Sin conexión con el BCE: uso los tipos de cambio del ${old.date || 'último día disponible'}`, 'err'); } catch(e) { console.warn(e); } }
+      return old.rates;
+    }
+  } catch (e) { console.error('[FX] caché ilegible:', e); }
+  throw new Error('Sin tipos de cambio del BCE: no se puede convertir a euros');
+}
+// Cotizaciones en peniques (GBX / GBp): 100 peniques = 1 libra
+function _fxNorm(amount, ccy){
+  const c = String(ccy || 'EUR');
+  if (c === 'GBX' || c === 'GBp' || c.toUpperCase() === 'GBX') return [amount / 100, 'GBP'];
+  return [amount, c.toUpperCase()];
 }
 
 // Convierte un valor de una moneda a otra usando tasas del BCE
 async function convertFx(amount, from, to = 'EUR') {
   if (!amount || amount === 0) return 0;
-  from = (from || 'EUR').toUpperCase();
+  [amount, from] = _fxNorm(amount, from || 'EUR');
   to = (to || 'EUR').toUpperCase();
   if (from === to) return amount;
   
@@ -12284,10 +12301,7 @@ async function convertFx(amount, from, to = 'EUR') {
   // Para convertir de X a Y:  amount(X) / rate(X) * rate(Y)  (todo pasando por EUR)
   const rateFrom = rates[from];
   const rateTo = rates[to];
-  if (!rateFrom || !rateTo) {
-    console.warn(`[FX] Moneda no soportada: ${from} → ${to}`);
-    return amount;
-  }
+  if (!rateFrom || !rateTo) throw new Error(`Moneda sin tipo de cambio del BCE: ${from} → ${to}`);
   // amount está en "from". 1 EUR = rateFrom * from, así que amount/rateFrom = EUR
   // Luego EUR * rateTo = to
   return (amount / rateFrom) * rateTo;
@@ -12296,10 +12310,11 @@ async function convertFx(amount, from, to = 'EUR') {
 // Síncrono (para uso en renderers) — devuelve null si no hay caché
 function convertFxSync(amount, from, to = 'EUR') {
   if (!amount || amount === 0) return 0;
-  from = (from || 'EUR').toUpperCase();
+  [amount, from] = _fxNorm(amount, from || 'EUR');
   to = (to || 'EUR').toUpperCase();
   if (from === to) return amount;
-  
+  // Al arrancar, antes de que responda el BCE: los últimos tipos guardados (con su fecha)
+  if (!_fxCache) { try { const old = JSON.parse(localStorage.getItem(FX_CACHE_KEY) || 'null'); if (old && old.rates) _fxCache = { ...old, stale: Date.now() - old.ts > FX_TTL }; } catch(e) { console.error('[FX] caché ilegible:', e); } }
   const rates = _fxCache?.rates;
   if (!rates) return null;
   const rateFrom = rates[from];
@@ -12309,8 +12324,17 @@ function convertFxSync(amount, from, to = 'EUR') {
 }
 
 // Precarga las tasas FX al inicio
-getFxRates().catch(() => {});
+getFxRates().catch(e => console.error('[FX]', e.message));
 
+// Moneda de cotización por la bolsa del símbolo, SOLO cuando es inequívoca. Londres (.L) cotiza en USD,
+// GBP o peniques (GBX) según el valor: ahí no se adivina (null) y manda la moneda de la posición.
+function ccyFromSymbol(sym){
+  const t = String(sym || '').toUpperCase().trim();
+  if (/^[A-Z]{1,5}$/.test(t)) return 'USD';
+  const m = t.match(/\.([A-Z]{1,3})$/); if (!m) return null;
+  return ({ DE:'EUR', F:'EUR', XETRA:'EUR', AS:'EUR', PA:'EUR', MC:'EUR', MI:'EUR', BR:'EUR', VI:'EUR', LS:'EUR', IR:'EUR', HE:'EUR',
+            SW:'CHF', TO:'CAD', V:'CAD', T:'JPY', HK:'HKD', AX:'AUD', ST:'SEK', CO:'DKK', OL:'NOK' })[m[1]] || null;
+}
 async function fetchPrice(ticker, opts = {}) {
   let t = ticker.toUpperCase().trim();
   
@@ -12362,8 +12386,9 @@ async function fetchPrice(ticker, opts = {}) {
           ticker, 
           price, 
           name: d.name || ticker,
-          currency: d.currency || 'USD',
-          date: new Date().toISOString(), 
+          currency: d.currency || ccyFromSymbol(ticker),   // sin moneda conocida → null (no se adivina)
+          source: 'TwelveData',
+          date: d.datetime ? String(d.datetime).slice(0, 10) : (d.timestamp ? new Date(d.timestamp * 1000).toISOString().slice(0, 10) : null),
           ts: Date.now() 
         };
         try { localStorage.setItem(cacheKey, JSON.stringify(result)); } catch {}
@@ -12478,7 +12503,7 @@ async function fetchPriceFinnhubExact(sym){
     const r = await fetch(`${FINNHUB_BASE}/quote?symbol=${encodeURIComponent(sym)}&token=${FINNHUB_KEY}`, { signal: AbortSignal.timeout(7000) });
     if (!r.ok) return null;
     const d = await r.json();
-    if (d && d.c && d.c > 0) return { ticker: sym, price: d.c, name: sym, currency:'EUR', source:'finnhub', date:new Date().toISOString(), ts:Date.now() };
+    if (d && d.c && d.c > 0) return { ticker: sym, price: d.c, name: sym, currency: ccyFromSymbol(sym), source:'finnhub', date: d.t ? new Date(d.t*1000).toISOString().slice(0,10) : null, ts:Date.now() };
   } catch(e){}
   return null;
 }
@@ -12508,8 +12533,8 @@ async function fetchPriceFinnhub(ticker) {
       if (d && d.c && d.c > 0) {
         const result = {
           ticker: base, price: d.c, name: base,
-          currency: 'EUR', source: 'finnhub', finnhubSymbol: sym,
-          date: new Date().toISOString(), ts: Date.now()
+          currency: ccyFromSymbol(sym), source: 'finnhub', finnhubSymbol: sym,
+          date: d.t ? new Date(d.t * 1000).toISOString().slice(0, 10) : null, ts: Date.now()
         };
         try { localStorage.setItem(cacheKey, JSON.stringify(result)); } catch {}
         console.log(`[Finnhub] ${base} → ${sym}: ${d.c}`);
@@ -12534,7 +12559,7 @@ async function fetchPriceFMP(ticker){
     const d = await r.json();
     const row = Array.isArray(d) ? d[0] : d;
     if(row && typeof row.price === 'number'){
-      const result = { ticker:sym, price:row.price, name:row.name||sym, currency:'USD', source:'FMP', date:new Date().toISOString(), ts:Date.now() };
+      const result = { ticker:sym, price:row.price, name:row.name||sym, currency:ccyFromSymbol(sym), source:'FMP', date: row.timestamp ? new Date(row.timestamp*1000).toISOString().slice(0,10) : null, ts:Date.now() };
       try{ localStorage.setItem(cacheKey, JSON.stringify(result)); }catch{}
       return result;
     }
@@ -12608,58 +12633,9 @@ async function fetchHistoricalPrice(ticker, date, opts = {}) {
   return await tryFetch(t);
 }
 
-async function updateBolsaPrices() {
-  const bolsaBlocks = blocks.filter(b => !b.deleted && b.type === 'bolsa');
-  if (!bolsaBlocks.length) return;
-
-  const allTickers = new Set();
-  bolsaBlocks.forEach(block => {
-    (block.extra?.positions || []).forEach(p => {
-      // Solo tickers reales (no robo advisors sin ticker)
-      if (p.ticker && !p.isRoboAdvisor) allTickers.add(p.ticker.toUpperCase().trim());
-    });
-  });
-
-  if (allTickers.size === 0) return;
-
-  let updated = false;
-
-  for (const ticker of allTickers) {
-    const priceData = await fetchPrice(ticker);
-    if (!priceData?.price) continue;
-
-    for (const block of bolsaBlocks) {
-      const positions = block.extra?.positions || [];
-      const posIdx = positions.findIndex(p => p.ticker?.toUpperCase()?.trim() === ticker);
-      if (posIdx < 0) continue;
-
-      const pos = positions[posIdx];
-      pos.lastPrice = priceData.price;
-      if (pos.qty) {
-        pos.value = Math.round(pos.qty * priceData.price);
-        block.extra.positions = positions;
-      }
-    }
-  }
-
-  // Recalcular valores totales de bloques
-  for (const block of bolsaBlocks) {
-    if (!block.extra?.positions?.length) continue;
-    const totalValue = block.extra.positions.reduce((s, p) => s + (p.value || (p.qty || 0) * (p.lastPrice || p.entry || 0)), 0);
-    if (totalValue > 0) {
-      block.eur_value = Math.round(totalValue);
-      block.value = Math.round(totalValue);
-      block.extra.lastPriceUpdate = new Date().toISOString();
-      await saveBlockDB(block);
-      updated = true;
-    }
-  }
-
-  if (updated) {
-    renderDash(); renderPatr(); renderSidebar();
-    toast('✓ Precios TwelveData actualizados');
-  }
-}
+// Un solo camino de precios: updateBolsaPricesForBlock (convierte divisas y marca lo que falla).
+// Esta función antigua sumaba dólares como euros; se mantiene el nombre porque se llama desde varios sitios.
+async function updateBolsaPrices() { return refreshAllPrices(true); }
 
 // ── Versión silenciosa para un solo bloque (auto-update al abrir) ──
 // ═══ PRECIOS VIVOS: refresca todas las posiciones de bolsa al abrir (mejora "datos que viven") ═══
@@ -12690,12 +12666,13 @@ async function updateBolsaPricesForBlock(blockId, silent = false) {
   const tickerPositions = positions.filter(p => p.ticker && !p.isRoboAdvisor && p.qty > 0);
   if (tickerPositions.length === 0) return;
 
-  // Precarga FX antes de empezar
-  await getFxRates();
+  try { await getFxRates(); }
+  catch (e) { if (!silent) toast('⚠ ' + e.message, 'err'); console.error('[precios]', e); return; }
 
   let updatedCount = 0;
   const errors = [];
   const needIsin = [];
+  const r2 = (n) => Math.round(n * 100) / 100;
 
   for (const pos of tickerPositions) {
     try {
@@ -12703,60 +12680,52 @@ async function updateBolsaPricesForBlock(blockId, silent = false) {
       const userCcy = pos.priceCurrency || pos.currency || null;
       const resolvedTicker = await resolveSymbol(pos, userCcy);
       const priceData = await fetchPrice(resolvedTicker, { currency: userCcy });
-      if (priceData?.price && priceData.price > 0) {
-        pos.lastPrice = priceData.price;
-        // Si la moneda devuelta por TwelveData es distinta a la del usuario, advertir
-        const tdCcy = (priceData.currency || 'USD').toUpperCase();
-        if (userCcy && userCcy !== tdCcy) {
-          console.warn(`[${pos.ticker}] Moneda usuario=${userCcy} pero TD devolvió=${tdCcy}. Usando ${tdCcy} para conversión.`);
-        }
-        pos.priceCurrency = tdCcy;
-        if (pos.qty) {
-          pos.valueNative = pos.qty * priceData.price;
-          pos.value = Math.round(await convertFx(pos.valueNative, pos.priceCurrency, 'EUR'));
-        }
-        updatedCount++;
-      } else {
-        errors.push(pos.ticker);
-        if (!pos.isin) needIsin.push(pos);   // en caso de duda → pediremos ISIN
-      }
+      if (!(priceData?.price > 0)) throw new Error(priceData?.message || 'sin precio');
+      // Moneda: la que da la fuente; si no la da, la de la posición. Nunca se supone.
+      const ccy = (priceData.currency || userCcy || '').trim();
+      if (!ccy) throw new Error('la fuente no indica la moneda: ponla en la posición');
+      const valueEur = await convertFx(pos.qty * priceData.price, ccy, 'EUR');
+      pos.lastPrice = priceData.price;
+      pos.priceCurrency = ccy;
+      pos.valueNative = r2(pos.qty * priceData.price);
+      pos.value = r2(valueEur);
+      pos.price_date = priceData.date || new Date().toISOString().slice(0, 10);
+      pos.price_source = priceData.source || (priceData.sources || []).join('+') || 'mercado';
+      pos.price_stale = false;
+      delete pos.price_error;
+      updatedCount++;
     } catch (e) {
-      console.warn(`[updateBolsaPricesForBlock] ${pos.ticker}:`, e.message);
+      console.warn(`[precios] ${pos.ticker}:`, e.message);
       errors.push(pos.ticker);
+      pos.price_stale = true;                 // se conserva el último precio válido, marcado como antiguo
+      pos.price_error = String(e.message || e).slice(0, 120);
       if (!pos.isin) needIsin.push(pos);
     }
   }
 
+  // Total en EUR: cada posición convertida; las que fallaron cuentan con su último valor válido
+  let totalEur = 0;
+  for (const p of positions) {
+    if (p.isRoboAdvisor) totalEur += (+p.value || 0);
+    else if (p.value) totalEur += +p.value;
+    else if (p.qty && (p.lastPrice || p.entry)) {
+      try { totalEur += await convertFx(p.qty * (p.lastPrice || p.entry), p.priceCurrency || p.currency || 'EUR', 'EUR'); }
+      catch (e) { console.error('[precios] sin conversión para', p.ticker, e.message); errors.push(p.ticker); }
+    }
+  }
   if (updatedCount > 0) {
-    // Recalcular valor total en EUR (sumando los .value que ya están convertidos)
-    let totalEur = 0;
-    for (const p of positions) {
-      if (p.isRoboAdvisor) {
-        totalEur += (p.value || 0);
-      } else if (p.value) {
-        totalEur += p.value;
-      } else if (p.qty && (p.lastPrice || p.entry)) {
-        // Fallback: convertir si tiene moneda
-        const native = p.qty * (p.lastPrice || p.entry);
-        totalEur += await convertFx(native, p.priceCurrency || 'EUR', 'EUR');
-      }
-    }
-    if (totalEur > 0) {
-      block.eur_value = Math.round(totalEur);
-      block.value = Math.round(totalEur);
-    }
-    block.extra.lastPriceUpdate = new Date().toISOString();
+    block.eur_value = block.value = r2(totalEur);
+    block.extra.lastPriceAttempt = new Date().toISOString();
+    if (errors.length === 0) block.extra.lastPriceUpdate = block.extra.lastPriceAttempt;   // al día SOLO si todo se actualizó
+    block.extra.priceErrors = errors;
     await saveBlockDB(block);
-
-    // Re-renderizar la vista actual
     renderBlockDetail(blockId);
     renderSidebar();
-
     if (!silent) {
       const msg = errors.length > 0
-        ? `✓ ${updatedCount} precios actualizados · ${errors.length} sin datos: ${errors.slice(0,2).join(', ')}${errors.length>2?'...':''}`
-        : `✓ ${updatedCount} precios actualizados desde TwelveData`;
-      toast(msg);
+        ? `✓ ${updatedCount} precios actualizados · ${errors.length} con el precio anterior: ${errors.slice(0,3).join(', ')}${errors.length>3?'…':''}`
+        : `✓ ${updatedCount} precios actualizados`;
+      toast(msg, errors.length ? 'err' : 'ok');
     }
   } else if (!silent) {
     toast(`⚠ No se pudieron obtener precios. Tickers: ${errors.join(', ')}`, 'err');
@@ -13555,11 +13524,12 @@ async function saveEditedPosition(blockId, posIdx, isRobo) {
     p.currency = ccy;
     p.priceCurrency = ccy;
     p.valueNative = p.qty * (p.lastPrice || p.entry);
-    p.value = Math.round(await convertFx(p.valueNative, ccy, 'EUR'));
+    try { p.value = Math.round(await convertFx(p.valueNative, ccy, 'EUR') * 100) / 100; }
+    catch (e) { toast('⚠ No guardado: ' + e.message, 'err'); return; }
   }
   
   // ⚡ Recalcular total con función central
-  await getFxRates();
+  try { await getFxRates(); } catch (e) { toast('⚠ No guardado: ' + e.message, 'err'); return; }
   const newVal = recalcBolsaValue(block);
   block.value = newVal;
   block.eur_value = newVal;
@@ -14201,7 +14171,7 @@ async function saveImportedPositions() {
   if (!block) return;
   
   // Precarga FX antes de procesar
-  await getFxRates();
+  try { await getFxRates(); } catch (e) { toast('⚠ No importado: ' + e.message, 'err'); return; }
   
   // Calcular valor total con conversión a EUR
   const positions = [];
@@ -14212,7 +14182,9 @@ async function saveImportedPositions() {
     const currency = p.currency || 'USD';
     const valueNative = p.qty * lastPrice;
     // Convertir a EUR usando tasas del BCE
-    const valueEur = await convertFx(valueNative, currency, 'EUR');
+    let valueEur;
+    try { valueEur = await convertFx(valueNative, currency, 'EUR'); }
+    catch (e) { toast(`⚠ No importado: ${ticker}: ${e.message}`, 'err'); return; }
     
     positions.push({
       ticker,
@@ -15018,8 +14990,9 @@ function computeInvestmentReturn(){
           const mNat=(p.lastPrice&&p.qty)?p.lastPrice*p.qty:(p.valueNative||0);
           const cNat=(p.entry&&p.qty)?p.entry*p.qty:0;
           if(cNat>0){
-            const mEur=ccy==='EUR'?mNat:(convertFxSync(mNat,ccy,'EUR')??mNat);
-            const cEur=ccy==='EUR'?cNat:(convertFxSync(cNat,ccy,'EUR')??cNat);
+            const mEur=ccy==='EUR'?mNat:(convertFxSync(mNat,ccy,'EUR')??(+p.value||0));
+            const cEur=ccy==='EUR'?cNat:(convertFxSync(cNat,ccy,'EUR')??NaN);
+            if(!isFinite(cEur)){ console.error('[rentabilidad] sin tipo de cambio para el coste de', p.ticker); return; }   // fuera del cálculo, no sumado en divisa
             cost+=cEur; market+=mEur;
           }
         }
