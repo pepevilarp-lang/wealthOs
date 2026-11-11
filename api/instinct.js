@@ -106,10 +106,17 @@ export function parseDate(v, today) {
   if (t === 'hoy') return today;
   if (t === 'ayer') { const d = new Date(today + 'T12:00:00Z'); d.setUTCDate(d.getUTCDate() - 1); return d.toISOString().slice(0, 10); }
   let m = t.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
-  if (m) return `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`;
+  if (m) return validYMD(m[1], m[2], m[3]);
   m = t.match(/^(\d{1,2})[\/.\-](\d{1,2})(?:[\/.\-](\d{2,4}))?$/);
-  if (m) { const y = m[3] ? (m[3].length === 2 ? '20' + m[3] : m[3]) : today.slice(0, 4); return `${y}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`; }
+  if (m) { const y = m[3] ? (m[3].length === 2 ? '20' + m[3] : m[3]) : today.slice(0, 4); return validYMD(y, m[2], m[1]); }
   return null;
+}
+// Fecha real o null: rechaza 31/02, mes 13, día 0…
+function validYMD(y, mo, d) {
+  const Y = Number(y), M = Number(mo), D = Number(d);
+  if (!(M >= 1 && M <= 12 && D >= 1)) return null;
+  if (D > new Date(Date.UTC(Y, M, 0)).getUTCDate()) return null;
+  return `${Y}-${String(M).padStart(2, '0')}-${String(D).padStart(2, '0')}`;
 }
 export function resolveCategory(category, concept) {
   if (category) {
@@ -215,20 +222,59 @@ async function putKV(uid, key, obj) {
   await sb('user_kv?on_conflict=user_id,key', { method: 'POST', prefer: 'resolution=merge-duplicates,return=minimal',
     body: { user_id: uid, key, value: JSON.stringify(obj), deleted: false, updated_at: new Date().toISOString() } });
 }
-// La misma regla que la app (applyQuickExpense): mes por nombre, en castellano o catalán
+// Meses con AÑO (misma regla que la app: expMonthKeyFor). Cada mes guarda su año en `year`; en los
+// antiguos se deduce de sus movimientos. Un mes de otro año se crea como "Noviembre 2027".
+const ISO = /^\d{4}-\d{2}-\d{2}$/;
+function monthNumOf(m) {
+  if (m && +m.num >= 1 && +m.num <= 12) return +m.num;
+  const n = norm((m && m.name) || '').slice(0, 3);
+  let i = SP.findIndex(x => norm(x).slice(0, 3) === n); if (i < 0) i = CA.findIndex(x => norm(x).slice(0, 3) === n);
+  return i + 1;
+}
+function monthYearOf(m) {
+  if (m && +m.year > 2000) return +m.year;
+  const c = {};
+  for (const i of ((m && m.items) || [])) if (ISO.test(String(i.date || ''))) c[i.date.slice(0, 4)] = (c[i.date.slice(0, 4)] || 0) + 1;
+  const ys = Object.keys(c).sort((a, b) => c[b] - c[a]);
+  return ys.length ? +ys[0] : null;
+}
 function monthKeyFor(data, date) {
-  const mi = Number(date.slice(5, 7)) - 1;
-  const found = Object.keys(data).find(k => {
-    const nm = String((data[k] && data[k].name) || k).toLowerCase();
-    return nm.startsWith(SP[mi].toLowerCase().slice(0, 3)) || nm.startsWith(CA[mi].toLowerCase().slice(0, 3));
-  });
-  return found || SP[mi];
+  const y = Number(date.slice(0, 4)), mi = Number(date.slice(5, 7)) - 1;
+  const keys = Object.keys(data).filter(k => k[0] !== '_' && data[k] && monthNumOf(data[k]) === mi + 1);
+  return keys.find(k => monthYearOf(data[k]) === y) || keys.find(k => monthYearOf(data[k]) === null) || null;
 }
 function ensureMonth(data, date) {
-  const key = monthKeyFor(data, date), mi = Number(date.slice(5, 7)) - 1;
-  if (!data[key]) data[key] = { name: key, num: mi + 1, nomina: 0, extra: 0, totalIncome: 0, totalExpense: 0, savings: 0, target: 0, items: [] };
+  const y = Number(date.slice(0, 4)), mi = Number(date.slice(5, 7)) - 1;
+  let key = monthKeyFor(data, date);
+  if (!key) {
+    key = data[SP[mi]] ? `${SP[mi]} ${y}` : SP[mi];
+    data[key] = { name: key, num: mi + 1, year: y, nomina: 0, extra: 0, totalIncome: 0, totalExpense: 0, savings: 0, target: 0, items: [] };
+  }
+  if (!data[key].year) data[key].year = monthYearOf(data[key]) || y;
   if (!Array.isArray(data[key].items)) data[key].items = [];
   return data[key];
+}
+// Movimientos de un mes AAAA-MM, estén en el cajón que estén (filtrados por su fecha real)
+function itemsOfMonth(data, ym) {
+  const out = [];
+  const legacy = monthKeyFor(data, ym + '-15');
+  for (const [k, m] of Object.entries(data)) {
+    if (k[0] === '_' || !m) continue;
+    for (const i of (m.items || [])) {
+      if (ISO.test(String(i.date || ''))) { if (i.date.startsWith(ym)) out.push(i); }
+      else if (k === legacy) out.push(i);   // antiguos sin fecha: cuentan en su cajón
+    }
+  }
+  return out;
+}
+// Lista de borrados (para que la app y otros dispositivos no "resuciten" lo borrado)
+const kDeleted = (uid) => `wealth_exp_deleted_${uid}`;
+async function markDeleted(uid, ids, on = true) {
+  const cur = await getKV(uid, kDeleted(uid), {});
+  const now = Date.now(), limit = now - 120 * 86400000;
+  for (const id of ids) { if (on) cur[id] = new Date(now).toISOString(); else delete cur[id]; }
+  for (const [id, at] of Object.entries(cur)) if (Date.parse(at) < limit) delete cur[id];
+  await putKV(uid, kDeleted(uid), cur);
 }
 // Totales recalculados igual que en la app (mergeExpenseMovements)
 // Ingresos de un mes: los movimientos de ingreso mandan. Los campos antiguos `nomina` y `extra` solo
@@ -251,15 +297,18 @@ function recomputeMonth(m) {
 }
 const C = (x) => Math.round((Number(x) || 0) * 100);   // a céntimos
 function monthView(data, today) {
-  const m = data[monthKeyFor(data, today)];
-  const items = (m && m.items) || [];
+  const ym = today.slice(0, 7);
+  const key = monthKeyFor(data, today), bucket = key ? data[key] : null;
+  const items = itemsOfMonth(data, ym);
+  // Campos antiguos nomina/extra del cajón: solo si ese cajón es de este año
+  const m = { ...(bucket && monthYearOf(bucket) === Number(ym.slice(0, 4)) ? bucket : {}), items };
   const byCat = {};
   let spent = 0, incomeItems = 0;
   for (const i of items) {
     if (i.isIncome) { incomeItems += C(i.amount); continue; }
     spent += C(i.amount); byCat[i.category || 'Altres'] = (byCat[i.category || 'Altres'] || 0) + C(i.amount);
   }
-  const income = m ? monthIncomeCents(m) : 0;
+  const income = monthIncomeCents(m);
   return { spent, income, byCat, items };
 }
 
@@ -341,6 +390,7 @@ async function actItemOnce(uid, b, today, isIncome) {
   m.items.push(item);
   recomputeMonth(m);
   const ver2 = await putExpensesIf(uid, data, ver);     // 1º el movimiento (solo si nadie lo cambió a la vez)
+  if (id) { const del = await getKV(uid, kDeleted(uid), {}); if (del[item.id]) await markDeleted(uid, [item.id], false); }
   if (affect && acct.b) {                                // 2º el saldo, una sola vez
     cashR = await applyCash(uid, acct.b.id, `item:${item.id}`, isIncome ? cents : -cents, date);
     if (cashR.applied) { item.cash_applied = true; try { await putExpensesIf(uid, data, ver2); } catch (e) { if (e.code !== 'CONFLICT') throw e; } }
@@ -370,6 +420,7 @@ async function actDeleteItemOnce(uid, id) {
     const it = m.items[idx];
     m.items.splice(idx, 1); recomputeMonth(m);
     await putExpensesIf(uid, data, ver);
+    await markDeleted(uid, [id]);
     let r = null;
     if (it.account_id) r = await revertCash(uid, it.account_id, `item:${it.id}`);
     return ok(`✓ Borrado (${id}): ${eur(C(it.amount))} · ${it.concept} · ${it.date}.${r && r.reverted ? ` Saldo de ${it.account_name}: ${eur(r.before)} → ${eur(r.after)}.` : ''}`,
@@ -975,20 +1026,42 @@ function findItems(data, b0) {
   });
   return out.sort((a, z) => String(z.i.date).localeCompare(String(a.i.date)));
 }
+// Editar = lo mismo que borrar y volver a apuntar: el movimiento cambia de mes si cambia la fecha y el
+// efectivo se corrige exactamente (se revierte lo aplicado y se aplica el nuevo importe). Con control de versión.
 async function actEditExpense(uid, b0) {
-  const data = await getExpenses(uid);
-  const f = findItems(data, b0.match || b0);
-  if (!f.length) return bad('No encuentro ese movimiento. Dime el concepto, el importe o la fecha.');
-  if (f.length > 1) return bad(`Hay ${f.length} que encajan: ${f.slice(0, 4).map(x => `${x.i.date} ${eur(C(x.i.amount))} ${x.i.concept}`).join(' · ')}. Dime cuál (fecha o importe).`);
-  const { k, i } = f[0], ch = [];
+  return withExpenseRetry(() => actEditExpenseOnce(uid, b0));
+}
+async function actEditExpenseOnce(uid, b0) {
+  const today = madridToday();
+  const { data, ver } = await getExpensesV(uid);
+  const f = b0.id ? findItems(data, {}).filter(x => x.i.id === b0.id) : findItems(data, b0.match || b0);
+  if (!f.length) return bad('No encuentro ese movimiento. Dime el id, o el concepto, el importe o la fecha.');
+  if (f.length > 1) return bad(`Hay ${f.length} que encajan: ${f.slice(0, 4).map(x => `${x.i.date} ${eur(C(x.i.amount))} ${x.i.concept} [${x.i.id}]`).join(' · ')}. Dime cuál (id, fecha o importe).`);
+  const { k, idx, i } = f[0], ch = [];
+  const before = { cents: C(i.amount), date: i.date };
   if (b0.new_amount !== undefined) { const c = toCents(b0.new_amount); if (!c || c <= 0) return bad('Importe no válido.'); i.amount = c / 100; ch.push(`importe → ${eur(c)}`); }
   if (b0.new_category) { const cat = resolveCategory(b0.new_category, ''); const ci = catInfo(cat); i.category = cat; i.icon = ci.icon; i.color = ci.color; ch.push(`categoría → ${cat}`); }
   if (b0.new_concept) { i.concept = txt(b0.new_concept).slice(0, 80); ch.push(`concepto → ${i.concept}`); }
-  if (b0.new_date) { const d = parseDate(b0.new_date, madridToday()); if (!d) return bad('Fecha no válida.'); i.date = d; ch.push(`fecha → ${d}`); }
+  if (b0.new_date) {
+    const d = parseDate(b0.new_date, today); if (!d) return bad('Fecha no válida.');
+    if (d > today) return bad('La fecha es futura. Indica la fecha real.');
+    i.date = d; ch.push(`fecha → ${d}`);
+  }
   if (!ch.length) return bad('¿Qué cambio? Puedo editar importe, categoría, concepto o fecha.');
   i.updated_at = new Date().toISOString();
-  recomputeMonth(data[k]); await putExpenses(uid, data);
-  return ok(`✓ Movimiento editado: ${ch.join(', ')}.`, {});
+  const target = ensureMonth(data, i.date);
+  if (target !== data[k]) { data[k].items.splice(idx, 1); recomputeMonth(data[k]); target.items.push(i); }
+  recomputeMonth(target);
+  const ver2 = await putExpensesIf(uid, data, ver);
+  let cashNote = '';
+  if (i.account_id && (C(i.amount) !== before.cents || i.date !== before.date)) {
+    const key = `item:${i.id}`, delta = i.isIncome ? C(i.amount) : -C(i.amount);
+    const r1 = await revertCash(uid, i.account_id, key);
+    const r2 = await applyCash(uid, i.account_id, key, delta, i.date);
+    if (r1.reverted || r2.applied) cashNote = ` Saldo de ${i.account_name || 'la cuenta'}: ${eur(r1.reverted ? r1.before : r2.before)} → ${eur(r2.after)}.`;
+    if (!!r2.applied !== !!i.cash_applied) { i.cash_applied = !!r2.applied; try { await putExpensesIf(uid, data, ver2); } catch (e) { if (e.code !== 'CONFLICT') throw e; } }
+  }
+  return ok(`✓ Movimiento editado (${i.id}): ${ch.join(', ')}.${cashNote}`, { id: i.id, item: i });
 }
 async function actDeleteExpense(uid, b0) {
   const data = await getExpenses(uid);
@@ -1351,15 +1424,16 @@ function xlSerialToIso(v) {   // fechas de Excel guardadas como número de serie
 }
 async function actMonth(uid, b0, today) {
   const ym = /^\d{4}-\d{2}$/.test(String(b0.month || '')) ? b0.month : today.slice(0, 7);
-  const data = await getExpenses(uid);
+  const { data, ver } = await getExpensesV(uid);
   let changed = false;
-  for (const m of Object.values(data)) for (const i of (m.items || [])) {
+  for (const [mk, m] of Object.entries(data)) if (mk[0] !== '_') for (const i of (m.items || [])) {
     if (!i.id) { i.id = crypto.randomUUID(); changed = true; }                 // todo borrable por id
     if (/^\d{5}(\.\d+)?$/.test(String(i.date || ''))) { const iso = xlSerialToIso(i.date); if (iso) { i.date = iso; changed = true; } }
   }
-  if (changed) await putExpenses(uid, data);
-  const m = data[monthKeyFor(data, ym + '-15')] || { items: [] };
-  const items = (m.items || []).filter(i => !/^\d{4}-\d{2}-\d{2}$/.test(String(i.date || '')) || String(i.date).startsWith(ym));
+  if (changed) { try { await putExpensesIf(uid, data, ver); } catch (e) { if (e.code !== 'CONFLICT') throw e; } }   // limpieza: se reintenta en la próxima lectura
+  const bk = monthKeyFor(data, ym + '-15');
+  const m = bk && monthYearOf(data[bk]) === Number(ym.slice(0, 4)) ? data[bk] : { items: [] };
+  const items = itemsOfMonth(data, ym);
   const pick = (i) => ({ id: i.id, date: i.date, concept: i.concept, amount: Number(i.amount), category: i.category, account: i.account_name || null, source: i.source || 'app', cash_applied: !!i.cash_applied });
   const expenses = items.filter(i => !i.isIncome).map(pick).sort((a, z) => String(a.date).localeCompare(String(z.date)));
   const incomes = items.filter(i => i.isIncome).map(pick);

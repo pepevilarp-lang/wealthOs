@@ -136,6 +136,23 @@ await call('POST', 'expenses', { id: 'x1', amount: 5, concept: '<img src=x onerr
 { const it = Object.values(db.user_expense_data[0].data).flatMap(m => m.items)[0];
   check('11. Un concepto con <img onerror> se guarda sin etiquetas', !/[<>]/.test(it.concept), `concepto guardado: ${it.concept}`); }
 
+// ── 12. Mes nuevo de otro año: cajón propio con año ─────────────────────
+reset();
+db.user_expense_data.push({ user_id: U, updated_at: '2026-01-01T00:00:00Z', data: { [mName]: { name: mName, num: Number(ym.slice(5, 7)), items: [
+  { id: 'old', concept: 'Año pasado', amount: 50, isIncome: false, category: 'Oci', date: `${lastYear}-03` } ] } } });
+await call('POST', 'expenses', { id: 'n1', amount: 9, concept: 'Hoy', affect_cash: false });
+{ const d = db.user_expense_data[0].data, k2 = `${mName} ${ym.slice(0, 4)}`;
+  check('12. Un gasto de este año no entra en el cajón del año pasado', d[k2] && d[k2].year === Number(ym.slice(0, 4)) && d[mName].items.length === 1, `cajones: ${Object.keys(d).join(' | ')}`); }
+
+// ── 13. Borrar anota el id; volver a crearlo (deshacer) lo quita ────────
+reset();
+await call('POST', 'expenses', { id: 'z1', amount: 4, concept: 'Pan', affect_cash: false });
+await call('DELETE', 'expenses/z1');
+const delKV = () => JSON.parse((db.user_kv.find(r => r.key === `wealth_exp_deleted_${U}`) || { value: '{}' }).value);
+check('13a. Borrar deja el id en la lista de borrados', !!delKV().z1, JSON.stringify(delKV()));
+await call('POST', 'expenses', { id: 'z1', amount: 4, concept: 'Pan', affect_cash: false });
+check('13b. Volver a crearlo lo saca de la lista', !delKV().z1, JSON.stringify(delKV()));
+
 for (const x of results) console.log(`${x.ok ? 'PASA ' : 'FALLA'}  ${x.name}  —  ${x.detail}`);
 console.log(`\n${results.filter(x => x.ok).length}/${results.length} correctas`);
 if (results.some(x => !x.ok)) process.exitCode = 1;
