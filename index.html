@@ -1486,7 +1486,40 @@ const setText = (id,v) => {const e=$(id);if(e)e.textContent=v};
 function escH(s){ return s==null ? '' : String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
 // Segunda barrera contra código inyectado: los textos que escribe el usuario o llegan de fuera (extractos,
 // hoja de Google, Instinct, titulares) nunca contienen < ni >. Se limpian al cargar, venga de donde venga.
-function safeUrl(u){ const t = String(u || '').trim(); return /^https?:\/\//i.test(t) ? escH(t) : '#'; }
+// ── Meses de gastos con AÑO ──────────────────────────────────────────────────────────────────────
+// Los gastos se guardan por mes ("Noviembre"). Cada mes sabe su año: el guardado (m.year) o, en los
+// antiguos, el de sus movimientos. Buscar, crear y ordenar meses siempre por mes Y año: así noviembre de
+// 2026 y noviembre de 2027 nunca se mezclan. Los meses nuevos de otro año se llaman "Noviembre 2027".
+const EXP_SP = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+const EXP_PFX_SP = ['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
+const EXP_PFX_CA = ['gen','feb','mar','abr','mai','jun','jul','ago','set','oct','nov','des'];
+function expMonthNum(m){
+  if (m && +m.num >= 1 && +m.num <= 12) return +m.num;
+  const n = String((m && m.name) || '').toLowerCase().slice(0, 3);
+  let i = EXP_PFX_SP.indexOf(n); if (i < 0) i = EXP_PFX_CA.indexOf(n);
+  return i + 1;
+}
+function expMonthYear(m){
+  if (m && +m.year > 2000) return +m.year;
+  const c = {};
+  for (const i of ((m && m.items) || [])) { const d = String((i && i.date) || ''); if (/^\d{4}-\d{2}-\d{2}$/.test(d)) c[d.slice(0, 4)] = (c[d.slice(0, 4)] || 0) + 1; }
+  const ys = Object.keys(c).sort((a, b) => c[b] - c[a]);
+  return ys.length ? +ys[0] : null;
+}
+function expMonthOrder(m){ return (expMonthYear(m) || new Date().getFullYear()) * 12 + expMonthNum(m); }
+// Clave del mes (mi = 0..11) del año y, o null si no existe
+function expMonthKeyFor(data, y, mi){
+  const keys = Object.keys(data || {}).filter(k => k[0] !== '_' && data[k] && expMonthNum(data[k]) === mi + 1);
+  return keys.find(k => expMonthYear(data[k]) === y) || keys.find(k => expMonthYear(data[k]) === null) || null;
+}
+// Crea el mes (con su año) y devuelve su clave
+function expNewMonth(data, y, mi){
+  const key = data[EXP_SP[mi]] ? `${EXP_SP[mi]} ${y}` : EXP_SP[mi];
+  data[key] = { name: key, num: mi + 1, year: y, nomina: 0, extra: 0, totalIncome: 0, totalExpense: 0, savings: 0, target: 0, items: [] };
+  return key;
+}
+// Fecha local AAAA-MM-DD (no UTC: un gasto a las 00:30 es de hoy, no de ayer)
+function localISODate(d){ d = d || new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; }
 function cleanText(s){ return typeof s === 'string' ? s.replace(/[<>]/g, '') : s; }
 function sanitizeBlocks(list){
   for (const b of (list || [])) {
@@ -1541,7 +1574,22 @@ async function doUndo(){
   if(!_undoData) return;
   const u=_undoData; _undoData=null;
   try{
-    if(u.expense){ expenseData = u.expense; await saveExpenseData?.(); }
+    if(u.recreate){
+      const it = u.recreate, { data: ss } = await sb.auth.getSession(), tok = ss?.session?.access_token;
+      const r = await fetch('/api/instinct?route=' + (it.isIncome ? 'incomes' : 'expenses'), { method:'POST',
+        headers:{ 'Content-Type':'application/json', Authorization:'Bearer ' + tok },
+        body: JSON.stringify({ id: it.id, amount: it.amount, concept: it.concept, category: it.category, date: it.date,
+                               account: it.account_name || undefined, affect_cash: !!it.account_id }) });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || j.ok === false) throw new Error(j.message || ('HTTP ' + r.status));
+      await syncExpenseDataFromCloud();
+    }
+    if(u.expense){
+      const before = new Set(); Object.values(expenseData||{}).forEach(m => (m?.items||[]).forEach(i => i?.id && before.add(i.id)));
+      const back = []; Object.values(u.expense||{}).forEach(m => (m?.items||[]).forEach(i => { if (i?.id && !before.has(i.id)) back.push(i.id); }));
+      if (back.length) await _unmarkDeletedIds(back);
+      expenseData = u.expense; await saveExpenseData?.();
+    }
     if(u.blocks){  blocks = u.blocks; for(const b of blocks){ try{ await saveBlockDB(b); }catch(e){} } }
     if(u.docs){    docs = u.docs; }
   }catch(e){ console.warn('[undo]', e); }
@@ -4713,51 +4761,60 @@ function _quickCat(label){
   const f = QUICK_CATS.find(c => c.label.toLowerCase() === String(label||'').toLowerCase());
   return f || { label: label || 'Altres', icon:'📦', color:'#9CA3AF' };
 }
-function applyQuickExpense(amount, label, dateISO){
+// Respaldo local (solo si la API no responde): mismo mes Y año, fecha local, con id para no duplicar.
+function applyQuickExpense(amount, label, dateISO, id){
   const amt = Math.abs(parseFloat(amount)) || 0;
   if (!amt) return;
   const cat = _quickCat(label);
   const d = dateISO ? new Date(dateISO) : new Date();
-  const SP = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
-  const CA = ['Gener','Febrer','Març','Abril','Maig','Juny','Juliol','Agost','Setembre','Octubre','Novembre','Desembre'];
-  const mi = d.getMonth();
   if (!expenseData || typeof expenseData !== 'object') expenseData = {};
-  let key = Object.keys(expenseData).find(k => {
-    const nm = (expenseData[k]?.name || k || '').toLowerCase();
-    return nm.startsWith(SP[mi].toLowerCase().slice(0,3)) || nm.startsWith(CA[mi].toLowerCase().slice(0,3));
-  });
-  if (!key) {
-    key = SP[mi];
-    expenseData[key] = { name: SP[mi], num: mi+1, nomina:0, extra:0, totalIncome:0, totalExpense:0, savings:0, target:0, items:[] };
-  }
+  const y = d.getFullYear(), mi = d.getMonth();
+  const key = expMonthKeyFor(expenseData, y, mi) || expNewMonth(expenseData, y, mi);
   const m = expenseData[key];
   if (!Array.isArray(m.items)) m.items = [];
-  m.items.push({ concept: cat.label, amount: amt, isIncome: false, category: cat.label, icon: cat.icon, color: cat.color, date: d.toISOString().slice(0,10), source: 'quick' });
-  m.totalExpense = m.items.filter(it => it.amount > 0 && !it.isIncome).reduce((s,it)=>s+it.amount,0);
+  if (id && Object.values(expenseData).some(mm => (mm?.items || []).some(i => i.id === id))) return;
+  m.items.push({ id: id || crypto.randomUUID(), concept: cat.label, amount: amt, isIncome: false, category: cat.label, icon: cat.icon, color: cat.color,
+                 date: localISODate(d), source: 'quick', created_at: new Date().toISOString() });
+  _recalcMonth(m);
 }
+// Gastos de Siri que quedaron en la cola (el servidor no pudo registrarlos al momento): se registran por la
+// API, con las mismas reglas que Instinct (efectivo una vez, id fijo "quick-<id>" para no duplicar).
 async function syncQuickExpenses(){
   try{
     if (!sb || !user || demo) return;
     const { data, error } = await sb.from('quick_expenses').select('id,amount,category,note,occurred_at').eq('user_id', user.id);
     if (error) { console.error('[gastos rápidos] lectura:', error); return; }
     if (!Array.isArray(data) || data.length === 0) return;
-    // Registro de los ya aplicados en este dispositivo, para no duplicarlos si hay que reintentar
-    const APPLIED_KEY = 'orbit_quick_applied_' + user.id;
-    let applied = [];
-    try { applied = JSON.parse(localStorage.getItem(APPLIED_KEY) || '[]'); } catch(e) {}
-    const fresh = data.filter(r => !applied.includes(r.id));
-    fresh.forEach(r => applyQuickExpense(r.amount, r.category, r.occurred_at));
-    applied = applied.concat(fresh.map(r => r.id));
-    try { localStorage.setItem(APPLIED_KEY, JSON.stringify(applied)); } catch(e) {}
-    // Solo se borran de la nube cuando la nube ha confirmado que los gastos están guardados
-    const saved = await saveExpenseData();
-    if (!saved) { console.warn('[gastos rápidos] No se borran de la nube: el guardado no se confirmó'); return; }
-    const ids = data.map(r => r.id);
+    const { data: sess } = await sb.auth.getSession();
+    const tok = sess && sess.session && sess.session.access_token;
+    const done = [], viaLocal = [];
+    for (const r of data) {
+      const body = { id: 'quick-' + r.id, amount: r.amount, category: r.category, concept: r.note || r.category,
+                     date: localISODate(r.occurred_at ? new Date(r.occurred_at) : new Date()) };
+      let ok = false;
+      if (tok) {
+        try {
+          const res = await fetch('/api/instinct?route=expenses', { method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + tok }, body: JSON.stringify(body) });
+          const j = await res.json().catch(() => ({}));
+          ok = res.ok && j.ok !== false;
+          if (!ok) console.error('[gastos rápidos] la API no lo registró:', res.status, j.message);
+        } catch(e) { console.error('[gastos rápidos] API no disponible:', e); }
+      }
+      if (ok) done.push(r.id);
+      else { applyQuickExpense(r.amount, r.category, r.occurred_at, body.id); viaLocal.push(r.id); }
+    }
+    if (done.length) await syncExpenseDataFromCloud();
+    if (viaLocal.length) {
+      const saved = await saveExpenseData();
+      if (!saved) { console.warn('[gastos rápidos] No se borran de la cola: el guardado no se confirmó'); return; }
+      toast(`⚠ ${viaLocal.length} gasto(s) de Siri apuntados sin mover el efectivo: la API no respondió`, 'err');
+    }
+    const ids = done.concat(viaLocal);
     const { error: delErr } = await sb.from('quick_expenses').delete().in('id', ids);
     if (delErr) { console.error('[gastos rápidos] borrado:', delErr); return; }
-    try { localStorage.setItem(APPLIED_KEY, JSON.stringify(applied.filter(id => !ids.includes(id)))); } catch(e) {}
-    if (document.querySelector('#p-flujos')?.classList.contains('active')) { try { renderFlujos(); } catch(e){} }
-  }catch(e){ console.warn('syncQuickExpenses', e); }
+    if (document.querySelector('#p-flujos')?.classList.contains('active')) { try { renderFlujos(); } catch(e){ console.error('[gastos rápidos] pintar Gastos:', e); } }
+  }catch(e){ console.error('[gastos rápidos]', e); }
 }
 async function getOrCreateQuickToken(){
   if (!sb || !user) return null;
@@ -4870,60 +4927,110 @@ function _recalcMonth(mo){
   const expC = items.filter(i=>!i.isIncome).reduce((a,i)=>a+Math.round((+i.amount||0)*100),0);
   mo.totalExpense = expC/100; mo.totalIncome = incC/100; mo.savings = (incC-expC)/100;
 }
-function _mergeCloudNewItems(cloudData){
-  if (!cloudData || typeof cloudData !== 'object') return 0;
+// Incorpora lo que cambió en la nube desde la última sincronización de ESTE dispositivo:
+//  · movimientos nuevos (Instinct, hoja, Siri u otro dispositivo)
+//  · movimientos EDITADOS en la nube (updated_at posterior): se sustituye la copia local, en su mes y año
+//  · movimientos BORRADOS en otro sitio (lista wealth_exp_deleted_<uid>): se quitan de la copia local
+function _mergeCloudNewItems(cloudData, deletedIds){
   if (!expenseData || typeof expenseData !== 'object') expenseData = {};
   const since = _expSyncedAt();
-  const SP = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
-  const CA = ['gener','febrer','març','abril','maig','juny','juliol','agost','setembre','octubre','novembre','desembre'];
-  const localIds = new Set();
-  Object.values(expenseData).forEach(m => (m?.items || []).forEach(i => { if (i && i.id) localIds.add(i.id); }));
-  let added = 0;
-  for (const [ck, cm] of Object.entries(cloudData)) {
-    const fresh = (cm?.items || []).filter(i => i && i.id && !localIds.has(i.id) && i.created_at && Date.parse(i.created_at) > since);
-    if (!fresh.length) continue;
-    let lk = expenseData[ck] ? ck : null;
-    if (!lk) {
-      const nm = String(cm?.name || ck).toLowerCase(), mi = SP.findIndex(x => nm.startsWith(x.slice(0,3))) >= 0 ? SP.findIndex(x => nm.startsWith(x.slice(0,3))) : CA.findIndex(x => nm.startsWith(x.slice(0,3)));
-      lk = Object.keys(expenseData).find(k => { const n = String(expenseData[k]?.name || k).toLowerCase(); return mi >= 0 && (n.startsWith(SP[mi].slice(0,3)) || n.startsWith(CA[mi].slice(0,3))); });
+  let changed = 0;
+  const del = deletedIds || {};
+  if (Object.keys(del).length) {
+    for (const m of Object.values(expenseData)) {
+      if (!m || !Array.isArray(m.items)) continue;
+      const n0 = m.items.length;
+      m.items = m.items.filter(i => !(i && i.id && del[i.id]));
+      if (m.items.length !== n0) { changed += n0 - m.items.length; _recalcMonth(m); }
     }
-    if (!lk) { lk = ck; expenseData[lk] = { ...cm, items: [] }; }
-    if (!Array.isArray(expenseData[lk].items)) expenseData[lk].items = [];
-    fresh.forEach(i => { expenseData[lk].items.push(i); localIds.add(i.id); added++; });
-    _recalcMonth(expenseData[lk]);
   }
-  if (added) console.log(`[gastos] Incorporados ${added} movimiento(s) llegados de la nube (Instinct u otro dispositivo)`);
-  return added;
+  if (!cloudData || typeof cloudData !== 'object') return changed;
+  const local = new Map();
+  for (const [k, m] of Object.entries(expenseData)) (m?.items || []).forEach((i, idx) => { if (i && i.id) local.set(i.id, { k, idx }); });
+  const place = (i, cm) => {
+    const d = String(i.date || '');
+    const y = /^\d{4}-\d{2}-\d{2}$/.test(d) ? +d.slice(0, 4) : (expMonthYear(cm) || new Date().getFullYear());
+    const mi = /^\d{4}-\d{2}-\d{2}$/.test(d) ? +d.slice(5, 7) - 1 : expMonthNum(cm) - 1;
+    const key = expMonthKeyFor(expenseData, y, mi) || expNewMonth(expenseData, y, mi);
+    if (!Array.isArray(expenseData[key].items)) expenseData[key].items = [];
+    expenseData[key].items.push(i); _recalcMonth(expenseData[key]);
+  };
+  for (const cm of Object.values(cloudData)) {
+    for (const i of (cm?.items || [])) {
+      if (!i || !i.id || del[i.id]) continue;
+      const at = local.get(i.id);
+      if (!at) { if (i.created_at && Date.parse(i.created_at) > since) { place(i, cm); changed++; } continue; }
+      if (i.updated_at && Date.parse(i.updated_at) > since) {
+        const lm = expenseData[at.k], cur = lm.items[at.idx];
+        if (!cur || cur.id !== i.id) continue;
+        if (JSON.stringify(cur) === JSON.stringify(i)) continue;
+        lm.items.splice(at.idx, 1); _recalcMonth(lm);
+        local.clear(); for (const [k, m] of Object.entries(expenseData)) (m?.items || []).forEach((x, idx) => { if (x && x.id) local.set(x.id, { k, idx }); });
+        place(i, cm); changed++;
+      }
+    }
+  }
+  if (changed) console.log(`[gastos] ${changed} cambio(s) incorporados desde la nube (Instinct u otro dispositivo)`);
+  return changed;
+}
+async function _loadDeletedIds(){
+  if (!sb || !user?.id) return {};
+  const { data, error } = await sb.from('user_kv').select('value').eq('user_id', user.id).eq('key', 'wealth_exp_deleted_' + user.id).maybeSingle();
+  if (error) { console.error('[gastos] No se pudo leer la lista de borrados:', error); return {}; }
+  try { return (data && data.value) ? JSON.parse(data.value) : {}; } catch (e) { console.error('[gastos] lista de borrados ilegible:', e); return {}; }
+}
+async function _unmarkDeletedIds(ids){
+  if (!sb || !user?.id || !ids.length) return;
+  const cur = await _loadDeletedIds(); let n = 0;
+  ids.forEach(id => { if (cur[id]) { delete cur[id]; n++; } });
+  if (!n) return;
+  const { error } = await sb.from('user_kv').upsert({ user_id: user.id, key: 'wealth_exp_deleted_' + user.id, value: JSON.stringify(cur), deleted: false, updated_at: new Date().toISOString() });
+  if (error) console.error('[gastos] No se pudo actualizar la lista de borrados:', error);
+}
+async function _markDeletedIds(ids){
+  if (!sb || !user?.id || !ids.length) return;
+  const cur = await _loadDeletedIds();
+  const now = new Date().toISOString(); ids.forEach(id => { cur[id] = now; });
+  const { error } = await sb.from('user_kv').upsert({ user_id: user.id, key: 'wealth_exp_deleted_' + user.id, value: JSON.stringify(cur), deleted: false, updated_at: now });
+  if (error) console.error('[gastos] No se pudo anotar el borrado en la nube:', error);
 }
 
-// Guarda en el dispositivo y en la nube. Devuelve true solo si la nube confirmó el guardado.
-// IMPORTANTE: las consultas de supabase-js no se envían hasta que se esperan con await.
 async function saveExpenseData() {
-  // Antes de subir: incorporar lo que haya llegado a la nube mientras tanto (Instinct, otro dispositivo)
-  if (sb && user?.id && !demo) {
+  const ts = Date.now();
+  const writeLocal = () => { try {
+    localStorage.setItem(expenseStorageKey(), JSON.stringify(expenseData));
+    localStorage.setItem(expenseTsKey(), String(ts));
+  } catch(e) { console.warn('[gastos] caché local:', e); } };
+  if (!sb || !user?.id || demo) { writeLocal(); return false; }
+  // Guardado con control de versión: si otro (Instinct, la hoja, otro dispositivo) escribió entre la
+  // lectura y el guardado, se vuelve a leer, se incorporan sus cambios y se reintenta.
+  for (let attempt = 0; attempt < 4; attempt++) {
     try {
       const { data: cloud, error } = await sb.from('user_expense_data').select('data,updated_at').eq('user_id', user.id).maybeSingle();
       if (error) throw error;
-      if (cloud && cloud.data) _mergeCloudNewItems(sanitizeExpenses(cloud.data));
-    } catch(e) { console.warn('[gastos] No se pudo comprobar la nube antes de guardar:', e); }
+      const deleted = await _loadDeletedIds();
+      _mergeCloudNewItems(cloud && cloud.data ? sanitizeExpenses(cloud.data) : null, deleted);
+      writeLocal();
+      const stamp = new Date().toISOString();
+      if (cloud) {
+        const { data: upd, error: e2 } = await sb.from('user_expense_data').update({ data: expenseData, updated_at: stamp })
+          .eq('user_id', user.id).eq('updated_at', cloud.updated_at).select('updated_at');
+        if (e2) throw e2;
+        if (!upd || !upd.length) { await new Promise(r => setTimeout(r, 120 * (attempt + 1))); continue; }   // alguien escribió a la vez
+      } else {
+        const { error: e3 } = await sb.from('user_expense_data').insert({ user_id: user.id, data: expenseData, updated_at: stamp });
+        if (e3) { if (e3.code === '23505') continue; throw e3; }
+      }
+      _setExpSynced(Date.parse(stamp));
+      return true;
+    } catch(e) {
+      console.error('[gastos] No se pudo guardar en la nube:', e);
+      toast('⚠ Gastos guardados solo en este dispositivo: no se pudo sincronizar con la nube', 'err');
+      return false;
+    }
   }
-  const ts = Date.now();
-  try {
-    localStorage.setItem(expenseStorageKey(), JSON.stringify(expenseData));
-    localStorage.setItem(expenseTsKey(), String(ts));
-  } catch(e) { console.warn('save expenseData:', e); }
-  if (!sb || !user?.id || demo) return false;
-  try {
-    const { error } = await sb.from('user_expense_data')
-      .upsert({ user_id: user.id, data: expenseData, updated_at: new Date(ts).toISOString() });
-    if (error) throw error;
-    _setExpSynced(ts);
-    return true;
-  } catch(e) {
-    console.error('[gastos] No se pudo guardar en la nube:', e);
-    try { toast('⚠ Gastos guardados solo en este dispositivo: no se pudo sincronizar con la nube', 'err'); } catch(_) {}
-    return false;
-  }
+  toast('⚠ No se pudieron guardar los gastos: hay otros cambios guardándose a la vez. Vuelve a intentarlo.', 'err');
+  return false;
 }
 
 // Trae los gastos desde la nube si son más recientes (o si este dispositivo no tiene)
@@ -4941,6 +5048,7 @@ async function syncExpenseDataFromCloud() {
     const cloudTs = cloud.updated_at ? new Date(cloud.updated_at).getTime() : 0;
     if (!localKeys || cloudTs > localTs) {
       expenseData = sanitizeExpenses(cloud.data);
+      _mergeCloudNewItems(null, await _loadDeletedIds());
       try {
         localStorage.setItem(expenseStorageKey(), JSON.stringify(expenseData));
         localStorage.setItem(expenseTsKey(), String(cloudTs || Date.now()));
@@ -4951,15 +5059,11 @@ async function syncExpenseDataFromCloud() {
       }
     } else if (localKeys && localTs > cloudTs) {
       // Este dispositivo tiene datos más recientes que la nube → fusionar lo nuevo de la nube y subir
-      try {
-        if (_mergeCloudNewItems(sanitizeExpenses(cloud.data))) { try { localStorage.setItem(expenseStorageKey(), JSON.stringify(expenseData)); } catch(e) {} }
-        const { error } = await sb.from('user_expense_data')
-          .upsert({ user_id: user.id, data: expenseData, updated_at: new Date(localTs).toISOString() });
-        if (error) throw error;
-        _setExpSynced(Date.now());
-        if (typeof renderFlujos === 'function' && document.getElementById('p-flujos')?.classList.contains('active')) { try { renderFlujos(); } catch(e) {} }
+      // (saveExpenseData incorpora antes lo nuevo, editado y borrado en la nube, y guarda con control de versión)
+      if (await saveExpenseData()) {
+        if (typeof renderFlujos === 'function' && document.getElementById('p-flujos')?.classList.contains('active')) { try { renderFlujos(); } catch(e) { console.error('[gastos] pintar:', e); } }
         console.log('[gastos] Datos más recientes de este dispositivo subidos a la nube');
-      } catch(e) { console.error('[gastos] No se pudieron subir los datos recientes:', e); }
+      }
     }
   } else if (localKeys) {
     // La nube está vacía pero este dispositivo tiene datos → subirlos (esperando la respuesta)
@@ -5349,8 +5453,12 @@ async function handleExpenseUpload(file) {
     const added = []; let skipped = 0;
     Object.keys(newData).forEach(monthKey => {
       const nm = newData[monthKey];
-      let lk = expenseData[monthKey] ? monthKey : Object.keys(expenseData).find(k => (expenseData[k]?.num || 0) === (nm.num || -1));
-      if (!lk) { lk = monthKey; expenseData[lk] = { ...nm, nomina: 0, extra: 0, items: [] }; }
+      const nmY = expMonthYear(nm) || new Date().getFullYear(), nmM = expMonthNum(nm) - 1;
+      let lk = nmM >= 0 ? expMonthKeyFor(expenseData, nmY, nmM) : (expenseData[monthKey] ? monthKey : null);
+      if (!lk) {
+        if (nmM >= 0) { lk = expNewMonth(expenseData, nmY, nmM); expenseData[lk] = { ...nm, name: lk, year: nmY, nomina: 0, extra: 0, items: [] }; }
+        else { lk = monthKey; expenseData[lk] = { ...nm, nomina: 0, extra: 0, items: [] }; }
+      }
       const target = expenseData[lk];
       if (!Array.isArray(target.items)) target.items = [];
       const seen = new Set(target.items.map(_rowKey));
@@ -6156,7 +6264,7 @@ function showCategoryDrilldown(encodedCat) {
 
   const sortedMonths = Object.values(expenseData)
     .filter(m => m.totalExpense > 0 || m.totalIncome > 0)
-    .sort((a, b) => monthIndexFn(a.name) - monthIndexFn(b.name));
+    .sort((a, b) => expMonthOrder(a) - expMonthOrder(b));
 
   // Recolectar todos los movimientos de esta categoría + total por mes
   const items = [];
@@ -6259,24 +6367,40 @@ function showCategoryDrilldown(encodedCat) {
 
 // Recategorizar un movimiento individual
 // Eliminar un movimiento de gasto individual (con deshacer)
-function deleteExpenseItem(monthKey, idx, btnEl){
+// Borrar un movimiento: por la API (revierte el efectivo si lo movió y lo anota como borrado para que
+// ningún otro dispositivo lo "resucite"). Sin sesión (modo ejemplo) se borra solo en este dispositivo.
+async function deleteExpenseItem(monthKey, idx, btnEl){
   const month = expenseData[monthKey];
   if(!month || !month.items){ toast('Mes no encontrado','err'); return; }
-  // idx puede estar desactualizado tras borrados previos; validar
   let it = month.items[idx];
-  if(!it){ toast('Movimiento ya no existe','err'); try{ renderFlujos?.(); }catch(e){} return; }
-  pushUndo('expense', 'eliminar gasto');
-  month.items.splice(idx, 1);
-  recalcMonth(month);
-  try{ saveExpenseData?.(); }catch(e){}
-  toastUndo(`✓ Eliminado: ${it.concept}`);
-  try{ renderFlujos?.(); }catch(e){}
-  // refrescar el drilldown si está abierto (para que los índices se regeneren)
+  if(!it){ toast('Movimiento ya no existe','err'); try{ renderFlujos?.(); }catch(e){ console.error(e); } return; }
+  const tok = (sb && user && !demo) ? (await sb.auth.getSession()).data?.session?.access_token : null;
+  if (it.id && tok) {
+    let j = {}, r = null;
+    try {
+      r = await fetch('/api/instinct?route=expenses/' + encodeURIComponent(it.id), { method:'DELETE', headers:{ Authorization:'Bearer ' + tok } });
+      j = await r.json().catch(() => ({}));
+    } catch(e) { console.error('[gastos] borrar por la API:', e); }
+    if (!r || !r.ok || j.ok === false) { toast('⚠ No se pudo borrar: ' + (j.message || (r ? 'HTTP ' + r.status : 'sin conexión')), 'err'); return; }
+    month.items.splice(idx, 1); recalcMonth(month);
+    try { localStorage.setItem(expenseStorageKey(), JSON.stringify(expenseData)); } catch(e) { console.warn('[gastos] caché local:', e); }
+    await syncExpenseDataFromCloud();
+    _undoData = { scope:'expense', label:'eliminar gasto', ts: Date.now(), recreate: it };
+    toastUndo(`✓ Eliminado: ${it.concept}${j.data && j.data.balance != null ? ' · saldo actualizado' : ''}`);
+  } else {
+    pushUndo('expense', 'eliminar gasto');
+    month.items.splice(idx, 1);
+    recalcMonth(month);
+    if (it.id) await _markDeletedIds([it.id]);
+    await saveExpenseData?.();
+    toastUndo(`✓ Eliminado: ${it.concept}`);
+  }
+  try{ renderFlujos?.(); }catch(e){ console.error('[gastos] pintar:', e); }
   try{
     const open = document.querySelector('.overlay [data-drilldown-cat]');
     if(open){ const cat = open.getAttribute('data-drilldown-cat'); document.querySelectorAll('.overlay').forEach(o=>o.remove()); showCategoryDrilldown(cat); }
     else if(btnEl){ btnEl.closest('.overlay')?.remove(); }
-  }catch(e){}
+  }catch(e){ console.error('[gastos] refrescar detalle:', e); }
 }
 window.deleteExpenseItem = deleteExpenseItem;
 
@@ -6551,7 +6675,7 @@ function spendPlan(){
   const SPm = ['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'], CAm = ['gen','feb','mar','abr','mai','jun','jul','ago','set','oct','nov','des'];
   const MES = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
   const ed = (typeof expenseData === 'object' && expenseData) || {};
-  const key = Object.keys(ed).find(k => { const n = String((ed[k] && ed[k].name) || k).toLowerCase(); return n.startsWith(SPm[mi]) || n.startsWith(CAm[mi]); });
+  const key = expMonthKeyFor(ed, y, mi);
   const items = key ? ((ed[key].items) || []).filter(i => !/^\d{4}-\d{2}-\d{2}$/.test(String(i.date || '')) || String(i.date).startsWith(ym)) : [];
   const spent = items.filter(i => !i.isIncome).reduce((a, i) => a + (+i.amount || 0), 0);
   const incomeReg = items.filter(i => i.isIncome).reduce((a, i) => a + (+i.amount || 0), 0) || (key ? (+ed[key].nomina || 0) : 0);
@@ -6771,7 +6895,7 @@ function showRecurringDetail(encodedConcept) {
   
   const sortedMonths = Object.values(expenseData)
     .filter(m => m.totalExpense > 0 || m.totalIncome > 0)
-    .sort((a, b) => MONTH_INDEX_FN(a.name) - MONTH_INDEX_FN(b.name));
+    .sort((a, b) => expMonthOrder(a) - expMonthOrder(b));
   
   sortedMonths.forEach(month => {
     (month.items || []).forEach(it => {
@@ -6890,7 +7014,7 @@ function renderFlujos() {
   
   const activeMonths = Object.values(expenseData)
     .filter(m => m.totalExpense > 0 || m.totalIncome > 0)
-    .sort((a, b) => monthIndex(a.name) - monthIndex(b.name));
+    .sort((a, b) => expMonthOrder(a) - expMonthOrder(b));
 
   if (activeMonths.length === 0) {
     $('flujos-content').innerHTML = `
@@ -14929,7 +15053,7 @@ function renderDashTiles(){
   const MES=['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
   const now=new Date(), mi=now.getMonth(), ym=now.getFullYear()+'-'+String(mi+1).padStart(2,'0');
   const ed=(typeof expenseData==='object'&&expenseData)||{};
-  const key=Object.keys(ed).find(k=>{ const n=String((ed[k]&&ed[k].name)||k).toLowerCase(); return n.startsWith(SPm[mi])||n.startsWith(CAm[mi]); });
+  const key=expMonthKeyFor(ed, new Date().getFullYear(), mi);
   const items=key?((ed[key].items)||[]).filter(i=>!i.isIncome && (!/^\d{4}-\d{2}-\d{2}$/.test(String(i.date||'')) || String(i.date).startsWith(ym))):[];
   const spent=items.reduce((s,i)=>s+(+i.amount||0),0);
   let budgets={}; try{ budgets=loadBudgets()||{}; }catch(e){}
