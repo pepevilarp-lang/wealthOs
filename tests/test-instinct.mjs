@@ -73,9 +73,13 @@ db.blocks.push({ id: 'b1', user_id: U, type: 'bolsa', name: 'Broker Test', value
 await call('POST', 'trades', { id: 't1', side: 'buy', ticker: 'AAA', qty: 3, price: 10.45 });
 const bk = () => db.blocks.find(b => b.id === 'b1');
 check('5a. Valor de la cuenta con céntimos (3 × 10,45 = 31,35)', Math.abs(bk().eur_value - 31.35) < 0.001, `valor=${bk().eur_value}`);
-await call('POST', 'trades', { id: 't2', side: 'buy', ticker: 'USX', qty: 10, price: 110, currency: 'USD', fees: 5 });
+r = await call('POST', 'trades', { id: 't2', side: 'buy', ticker: 'USX', qty: 10, price: 110, currency: 'USD', fees: 5 });
 const usx = bk().extra.positions.find(p => p.ticker === 'USX');
-check('5b. Comisión en EUR convertida antes de sumarla al coste en USD', Math.abs(usx.entry - (1100 + 5 * 1.10) / 10) < 0.01, `coste medio=${usx.entry} USD (esperado ${(1100 + 5.5) / 10})`);
+check('5b. Comisión en la moneda de la operación (docs/API.md): coste medio (1.100 + 5) / 10 USD y mensaje en USD', Math.abs(usx.entry - 110.5) < 1e-6 && /comisión 5 USD/.test(r.body.message), `coste=${usx.entry} · ${r.body.message.slice(-60)}`);
+db.blocks.push({ id: 'cE', user_id: U, type: 'cash', name: 'Cuenta Euros', value: 2000, eur_value: 2000, extra: {}, deleted: false, updated_at: '2026-01-01T00:00:00Z' });
+await call('POST', 'trades', { id: 't3', side: 'buy', ticker: 'USY', qty: 10, price: 110, currency: 'USD', cash_account: 'Euros', account: 'Broker' });
+const cE = db.blocks.find(b => b.id === 'cE');
+check('5c. Compra de 1.100 USD descuenta 1.000 € de la cuenta en euros (1 € = 1,10 $)', Math.abs(cE.eur_value - 1000) < 0.01, `saldo=${cE.eur_value} (esperado 1000)`);
 
 // ── 6. Idempotencia de operaciones si falla el historial ────────────────
 reset();
@@ -152,6 +156,13 @@ const delKV = () => JSON.parse((db.user_kv.find(r => r.key === `wealth_exp_delet
 check('13a. Borrar deja el id en la lista de borrados', !!delKV().z1, JSON.stringify(delKV()));
 await call('POST', 'expenses', { id: 'z1', amount: 4, concept: 'Pan', affect_cash: false });
 check('13b. Volver a crearlo lo saca de la lista', !delKV().z1, JSON.stringify(delKV()));
+
+// ── 14. Diez compras simultáneas en la misma cuenta: ninguna se pierde ──
+reset();
+db.blocks.push({ id: 'b1', user_id: U, type: 'bolsa', name: 'Broker Test', value: 0, eur_value: 0, extra: { positions: [] }, deleted: false, updated_at: '2026-01-01T00:00:00Z' });
+await Promise.all(Array.from({ length: 10 }, (_, k) => call('POST', 'trades', { id: 'par' + k, side: 'buy', ticker: 'PAR', qty: 1, price: 10 })));
+{ const pp = db.blocks.find(b => b.id === 'b1').extra.positions.find(p => p.ticker === 'PAR');
+  check('14. 10 compras a la vez dejan exactamente 10 títulos y 10 registros', pp && pp.qty === 10 && db.movements.filter(m => m.ticker === 'PAR').length === 10, `títulos=${pp && pp.qty} registros=${db.movements.filter(m => m.ticker === 'PAR').length}`); }
 
 for (const x of results) console.log(`${x.ok ? 'PASA ' : 'FALLA'}  ${x.name}  —  ${x.detail}`);
 console.log(`\n${results.filter(x => x.ok).length}/${results.length} correctas`);

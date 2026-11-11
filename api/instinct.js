@@ -345,7 +345,7 @@ async function addMovement(uid, row) {
     const ins = await sb('movements', { method: 'POST', body: { user_id: uid, source: MOV_SOURCE[via() === 'session' ? 'app' : 'instinct'], ...row }, prefer: 'return=representation' });
     return { row: ins[0], duplicate: false };
   } catch (e) {
-    if (e.code === '23505' && row.request_id) {   // misma petición repetida: devolver la original
+    if ((e.code === '23505' || e.status === 409) && row.request_id) {   // misma petición repetida: devolver la original
       const ex = await sb(`movements?select=*&user_id=eq.${uid}&request_id=eq.${q(row.request_id)}&limit=1`);
       return { row: ex[0], duplicate: true };
     }
@@ -889,10 +889,10 @@ async function recalcBolsa(b) {
     if (p.isRoboAdvisor) { total += Number(p.value) || 0; continue; }
     const ccy = p.priceCurrency || p.currency || 'EUR';
     p.valueNative = r2((Number(p.lastPrice) || Number(p.entry) || 0) * (Number(p.qty) || 0));
-    p.value = Math.round(p.valueNative * (fx[ccy] || 1));
-    total += p.valueNative * (fx[ccy] || 1);
+    p.value = r2(p.valueNative * fx[ccy]);
+    total += p.valueNative * fx[ccy];
   }
-  b.value = b.eur_value = Math.round(total);
+  b.value = b.eur_value = r2(total);
   b.currency = 'EUR';
 }
 function pickBroker(blocks, query) {
@@ -901,12 +901,27 @@ function pickBroker(blocks, query) {
   return bolsas.length === 1 ? { b: bolsas[0] } : bolsas.length ? { many: bolsas } : { none: true };
 }
 
+// Guarda la cuenta solo si nadie la cambió desde que se leyó (updated_at como versión)
+async function saveBlockRowIf(b, ver) {
+  const patch = { name: b.name, value: b.value, eur_value: b.eur_value, currency: b.currency || 'EUR', notes: b.notes || '',
+                  extra: b.extra || {}, deleted: !!b.deleted, updated_at: new Date().toISOString() };
+  const filt = ver ? `updated_at=eq.${q(ver)}` : 'updated_at=is.null';
+  const upd = await sb(`blocks?id=eq.${q(b.id)}&user_id=eq.${q(b.user_id)}&${filt}`, { method: 'PATCH', prefer: 'return=representation', body: patch });
+  if (!upd || !upd.length) { const c = new Error('CONFLICT'); c.code = 'CONFLICT'; throw c; }
+}
+// Compra/venta con reintentos: si otra operación cambió la cuenta a la vez, se vuelve a leer y se repite
 async function actTradeBolsa(uid, b0, today, type) {
+  for (let i = 0; i < 8; i++) {
+    try { return await actTradeBolsaOnce(uid, b0, today, type); }
+    catch (e) { if (e.code !== 'CONFLICT' || i === 7) throw e; await new Promise(r => setTimeout(r, (20 + Math.random() * 60) * (i + 1))); }
+  }
+}
+async function actTradeBolsaOnce(uid, b0, today, type) {
   const blocks = await getBlocks(uid);
   const r = pickBroker(blocks, b0.asset || b0.account);
   if (!r.b) return r.none ? bad('No tienes ninguna cuenta de bolsa. Crea una primero, por ejemplo: "crea un activo de bolsa llamado Revolut".')
                           : assetNotFound(r, b0.asset || b0.account, blocks.filter(x => x.type === 'bolsa'));
-  const b = r.b; b.extra = b.extra || {}; b.extra.positions = b.extra.positions || [];
+  const b = r.b, ver = b.updated_at || null; b.extra = b.extra || {}; b.extra.positions = b.extra.positions || [];
   const ticker = String(b0.ticker || '').toUpperCase().replace(/[^A-Z0-9.]/g, '').slice(0, 16);
   const isin = String(b0.isin || '').toUpperCase().replace(/[^A-Z0-9]/g, '') || null;
   if (!ticker && !isin) return bad('Necesito el ticker (por ejemplo, VUAA) o el ISIN.');
@@ -944,9 +959,23 @@ async function actTradeBolsa(uid, b0, today, type) {
     msg = `✓ Venta de ${qty.toLocaleString('es-ES', { maximumFractionDigits: 6 })} ${p.ticker} a ${money(priceC, ccy)}. Resultado aproximado: ${gain >= 0 ? '+' : ''}${money(gain, ccy)} (sobre coste medio; para Hacienda cuenta el orden FIFO).${p.qty > 1e-8 ? ` Te quedan ${p.qty.toLocaleString('es-ES', { maximumFractionDigits: 6 })}.` : ' Posición cerrada.'}`;
   }
   await recalcBolsa(b);
-  await saveBlockRow(b);
-  try { await addMovement(uid, { type, date, amount: r2((type === 'buy' ? qty * price + feeC / 100 : qty * price - feeC / 100)), ticker: ticker || null, isin, qty, price, currency: ccy,
-    category: 'cartera', source: MOV_SOURCE[originOf(b0)], concept: `${type === 'buy' ? 'Compra' : 'Venta'} ${ticker || isin}`, request_id: b0.request_id || null }); } catch (e) { console.error('[instinct] historial de operaciones:', e); }
+  // 1º el historial: el índice único (user_id, request_id) impide registrar dos veces la misma operación.
+  //    Si ya existía, la cartera NO se toca. Si el historial falla, la cartera tampoco.
+  let mov;
+  try {
+    mov = await addMovement(uid, { type, date, amount: r2((type === 'buy' ? qty * price + feeC / 100 : qty * price - feeC / 100)), ticker: ticker || null, isin, qty, price, currency: ccy,
+      category: 'cartera', source: MOV_SOURCE[originOf(b0)] || 'instinct', concept: `${type === 'buy' ? 'Compra' : 'Venta'} ${ticker || isin}`, request_id: b0.request_id || null });
+  } catch (e) {
+    console.error('[instinct] historial de operaciones:', e);
+    return bad(`No he registrado la operación: no se pudo guardar en el historial (${e.message}). No se ha tocado la cartera; puedes reenviarla con el mismo id.`);
+  }
+  if (mov.duplicate) return ok(`Esa operación (${b0.request_id}) ya estaba registrada. No la he duplicado.`, { duplicate: true, account: b.name });
+  // 2º la cartera. Si no se puede guardar, se deshace el historial para que reenviar funcione.
+  try { await saveBlockRowIf(b, ver); }
+  catch (e) {
+    if (mov.row && mov.row.id) await sb(`movements?id=eq.${mov.row.id}&user_id=eq.${uid}`, { method: 'DELETE' }).catch(e2 => console.error('[instinct] no se pudo deshacer el historial:', e2));
+    throw e;   // CONFLICT → actTradeBolsa lo reintenta desde cero
+  }
   return ok(`${msg} Valor de ${b.name}: ${eur(C(b.eur_value))}.`, { account: b.name, value: Number(b.eur_value) });
 }
 
@@ -1357,19 +1386,26 @@ async function actTradeV2(uid, b0, today) {
   const entryBefore = pos ? Number(pos.entry) || 0 : null;
   const res = await actTradeBolsa(uid, { ...b0, account: broker.id, ticker, qty: d.qty, price: d.priceC / 100, price_exact: d.gross / 100 / d.qty, fees: feeC / 100, date, request_id: id }, today, type);
   if (res.status !== 200) return res;
+  if (res.body && res.body.data && res.body.data.duplicate) return ok(`Esa operación (${id}) ya está registrada. No la he duplicado.`, { id, duplicate: true });
   const totalC = type === 'buy' ? d.gross + feeC : d.gross - feeC;
-  // Efectivo, una sola vez
+  const tccy = String(b0.currency || (pos && (pos.priceCurrency || pos.currency)) || 'EUR').toUpperCase().slice(0, 3);
+  // Efectivo, una sola vez, y SIEMPRE en euros (una compra en USD descuenta su contravalor con el tipo del BCE)
   let cashMsg = '', cashBlockId = null;
   if (b0.cash_account) {
     const ca = await resolveCash(uid, b0.cash_account);
-    if (ca.b) { const cr = await applyCash(uid, ca.b.id, `trade:${id}`, type === 'buy' ? -totalC : totalC, date); cashBlockId = ca.b.id; cashMsg = cashLine(cr, ca.b.name); }
+    if (ca.b) {
+      let cashC = totalC;
+      if (tccy !== 'EUR') { const fx = await fxToEur([tccy]); cashC = Math.round(totalC * fx[tccy]); }
+      const cr = await applyCash(uid, ca.b.id, `trade:${id}`, type === 'buy' ? -cashC : cashC, date); cashBlockId = ca.b.id; cashMsg = cashLine(cr, ca.b.name);
+      if (tccy !== 'EUR' && cr.applied) cashMsg += ` (${money(totalC, tccy)} al tipo del BCE)`;
+    }
     else cashMsg = ` ${ca.error || ca.note}`;
   }
   // Datos para poder revertir la operación con exactitud
   const row = await findTradeRow(uid, id);
   if (row) await sb(`movements?id=eq.${row.id}&user_id=eq.${uid}`, { method: 'PATCH', body: {
     amount: totalC / 100, concept: `${type === 'buy' ? 'Compra' : 'Venta'} ${ticker} [cuenta:${broker.id}]${type === 'sell' && entryBefore !== null ? `[coste:${entryBefore}]` : ''}${cashBlockId ? `[caja:${cashBlockId}]` : ''}[fees:${feeC / 100}]` } });
-  return ok(`${res.body.message.replace(/^✓ /, `✓ (${id}) `)} Importe: ${money(totalC, String(b0.currency || 'EUR').toUpperCase())}${feeC ? ` (comisión ${eur(feeC)})` : ''}.${cashMsg}`,
+  return ok(`${res.body.message.replace(/^✓ /, `✓ (${id}) `)} Importe: ${money(totalC, tccy)}${feeC ? ` (comisión ${money(feeC, tccy)})` : ''}.${cashMsg}`,
     { id, side: type, ticker, qty: d.qty, price: d.priceC / 100, amount: totalC / 100, date, account: broker.name });
 }
 async function actFillOrder(uid, id, b0, today) {
