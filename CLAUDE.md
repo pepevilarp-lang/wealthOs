@@ -51,11 +51,20 @@ Modelos de IA (resuelto 3 oct 2026):
 - Revisar https://console.groq.com/docs/deprecations periódicamente.
 - Pendiente: el mensaje de error de `sendChat` culpa siempre a `GROQ_API_KEY`; debe mostrar el error real.
 
-Pendiente:
-- Las claves de Twelve Data, Finnhub y FMP siguen en `index.html`: rotarlas y moverlas al servidor
-  (tarea 2). Hasta entonces, no volver a escribir claves nuevas en el cliente.
-- `/api/groq`: exigir además la sesión de Supabase (JWT). La comprobación de origen frena a otras
-  webs, pero no a quien llame directamente fuera del navegador.
+Resuelto (11 nov 2026, rama auditoria-nov-2026):
+- Claves de Twelve Data, Finnhub y FMP fuera de `index.html`: todo pasa por `/api/market` (proxy con lista
+  cerrada de rutas y sesión obligatoria). Variables: `TWELVEDATA_KEY`, `FINNHUB_KEY`, `FMP_KEY`.
+  Las claves antiguas siguen en el historial de git: ROTARLAS.
+- `/api/groq` y `/api/market` exigen la sesión de Supabase (`api/_lib/session.js`). La app añade el token en
+  un solo punto (envoltorio de `fetch` junto a la configuración). `/api/health` solo prueba Groq con sesión.
+- Inyección de código: `escH()` en las plantillas con texto del usuario, limpieza de `<`/`>` al cargar
+  (`sanitizeBlocks/Expenses/Docs`) y al guardar en la API (`txt()`), enlaces solo http(s).
+- Supabase: seguridad por fila verificada en las 24 tablas; esquema real en `sql/000_schema_actual.sql` y
+  políticas en `sql/001_politicas.sql`. Migraciones aplicadas: columnas de preferencias en
+  `push_subscriptions` (antes faltaban y activar notificaciones fallaba) y funciones SECURITY DEFINER
+  sin ejecución anónima.
+- Vercel: producción es el proyecto `wealth-os` (orbit-it-gamma.vercel.app). `CRON_SECRET` creada.
+  `wealth-os-ah1o` es un duplicado del mismo repo sin variables de Supabase.
 
 ## Problemas conocidos, por prioridad
 
@@ -137,6 +146,35 @@ Pendiente:
   acción, desembolsado, distribuciones: valor = acciones × NAV por acción) e *informe trimestral*
   (solo resumen). El usuario confirma antes de aplicar y el documento queda enlazado como fuente.
 - Conservar la validación existente (`validateFundExtraction`): es correcta.
+
+## Auditoría 11 nov 2026 — qué cambió (detalle en los commits de la rama auditoria-nov-2026)
+- Gastos: cada mes guarda su `year`; buscar/crear/ordenar meses por mes Y año (`expMonthKeyFor`,
+  `monthKeyFor`, `itemsOfMonth`). Un mes nuevo de otro año se llama "Noviembre 2027".
+- Borrados: lista `user_kv` `wealth_exp_deleted_<uid>`; la app la aplica antes de subir. Ediciones en la nube
+  posteriores a la última sincronización se incorporan. `saveExpenseData` guarda con control de versión.
+- Borrar en la app va por `DELETE /api/instinct?route=expenses/<id>` (revierte el efectivo); deshacer lo recrea.
+- `edit_expense`: control de versión, cambia de mes y corrige el efectivo. Fechas imposibles rechazadas.
+- Operaciones: historial primero (índice único `movements_request`), cuenta de bolsa con control de versión,
+  efectivo en euros al tipo del BCE para compras en divisa, céntimos.
+- Precios: sin tipos de cambio inventados, GBX = peniques, moneda nunca supuesta (`ccyFromSymbol`), un solo
+  camino (`updateBolsaPricesForBlock`), `price_date/price_source/price_stale` por posición.
+- Siri: registro inmediato con `recordQuickExpense`; la cola se procesa por la API.
+- 216 `catch {}` → `_silenced(lugar, e)` (consola + `window.__orbitErrors`).
+- TIR de la posición de PE (`xirr`/`peIRR` y `xirrFlows`/`pePositionIRR`), distinta de la del informe.
+
+Pendiente:
+- Rotar las claves de Twelve Data, Finnhub y FMP y ponerlas en Vercel (`TWELVEDATA_KEY`, `FMP_KEY`).
+  Falta también `NEWS_API_KEY` en producción (las noticias de la app fallan sin ella).
+- Activar "Leaked password protection" en Supabase Auth.
+- Decidir si se borra el proyecto duplicado `wealth-os-ah1o` en Vercel.
+- Tabla `movements` como libro único de gastos (sigue siendo el objetivo); hoy los gastos siguen en un JSON por
+  usuario, ya con año, versión y borrados.
+- Extracción de documentos de PE a ciegas; Content-Security-Policy (requiere quitar los onclick en línea).
+
+## Pruebas
+`npm test`: sintaxis de /api y de las páginas + 7 baterías (API de Instinct, /api/market, Siri, gastos y
+divisas de la app, TIR) contra un Supabase simulado en memoria con datos ficticios. Ejecutar antes de subir.
+Local: `node dev-server.mjs` (ver LOCAL.md).
 
 ## Cómo trabajar
 - Una tarea cada vez, en el orden de arriba. Antes de editar, explicar qué se va a cambiar.
