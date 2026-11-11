@@ -63,6 +63,8 @@ const KEYWORDS = [
 ];
 
 // ── utilidades ──────────────────────────────────────────────────────────
+// Texto libre que llega del exterior (Instinct, hoja, Siri): nunca con < ni > (evita código inyectado en la app)
+const txt = (s) => String(s ?? '').replace(/[<>]/g, '').trim();
 const norm = (s) => String(s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
 export function toCents(v) {
   if (typeof v === 'number') return isFinite(v) ? Math.round(v * 100) : null;
@@ -313,7 +315,7 @@ async function actItemOnce(uid, b, today, isIncome) {
   if (date > today) return bad('La fecha es futura. Indica la fecha real.');
   const id = String(b.id || b.request_id || '').slice(0, 100) || null;
   const category = isIncome ? (b.category && /n[oó]mina/i.test(b.category) ? 'Nómina' : 'Ingressos') : resolveCategory(b.category, b.concept);
-  const concept = String(b.concept || '').slice(0, 80) || (isIncome ? 'Ingreso' : category);
+  const concept = txt(b.concept).slice(0, 80) || (isIncome ? 'Ingreso' : category);
   const { data, ver } = await getExpensesV(uid);
   // Idempotencia: el mismo id nunca se apunta ni descuenta dos veces
   let found = null;
@@ -390,7 +392,7 @@ async function actSetBudget(uid, b, today) {
 }
 
 async function actSetGoal(uid, b, today) {
-  const name = String(b.name || '').trim().slice(0, 60);
+  const name = txt(b.name).slice(0, 60);
   const cents = toCents(b.target);
   if (!name) return bad('¿Cómo se llama el objetivo? (por ejemplo, "Piso").');
   if (!cents || cents <= 0) return bad('Necesito el importe objetivo.');
@@ -683,7 +685,7 @@ async function actPeFlow(uid, b0, today, kind) {
   const dup = txs.find(t => t.kind === kind && Math.abs(Number(t.amount) - amount) < 0.01 && t.date === date);
   if (dup && !b0.confirm)
     return ok(`⚠ Ya hay registrado un ${label} de ${eur(cents)} del ${date} en ${b.name}. Si es OTRO distinto, confírmamelo y lo apunto; si es el mismo, no hago nada.`, { needs_confirmation: true });
-  const note = `Instinct · ${new Date().toISOString()}${b0.note ? ' · ' + String(b0.note).slice(0, 80) : ''}${b0.request_id ? ` [req:${b0.request_id}]` : ''}`;
+  const note = `Instinct · ${new Date().toISOString()}${b0.note ? ' · ' + txt(b0.note).slice(0, 80) : ''}${b0.request_id ? ` [req:${b0.request_id}]` : ''}`;
   const ins = await sb('pe_transactions', { method: 'POST', prefer: 'return=representation',
     body: { user_id: uid, block_id: b.id, kind, amount, date, note } });
   txs.push(ins && ins[0] ? ins[0] : { kind, amount, date, note });
@@ -746,7 +748,7 @@ async function actAssets(uid) {
 async function actAddAsset(uid, b0, today) {
   const type = TYPE_SYNONYMS[norm(b0.type)] || (ASSET_TYPES[b0.type] ? b0.type : null);
   if (!type) return bad(`Tipo de activo no válido. Usa: ${Object.values(ASSET_TYPES).join(', ')}.`);
-  const name = String(b0.name || '').trim().slice(0, 120);
+  const name = txt(b0.name).slice(0, 120);
   if (!name) return bad('¿Qué nombre le pongo al activo?');
   const blocks = await getBlocks(uid);
   if (blocks.some(x => norm(x.name) === norm(name))) return bad(`Ya tienes un activo llamado "${name}". Si quieres cambiar su valor, pídeme que lo actualice.`);
@@ -757,11 +759,11 @@ async function actAddAsset(uid, b0, today) {
   if (type === 'pe') {
     const comm = toCents(b0.committed ?? b0.commitment ?? 0) || 0;
     Object.assign(extra, { committed_base: comm / 100, called_base: (toCents(b0.called ?? 0) || 0) / 100, distributed_base: 0,
-      gp: String(b0.gp || '').slice(0, 80), vintage: String(b0.vintage || '').slice(0, 10) });
+      gp: txt(b0.gp).slice(0, 80), vintage: txt(b0.vintage).slice(0, 10) });
     if (b0.value !== undefined) Object.assign(extra, { nav_official: valueC / 100, nav_date: dayBefore(today), nav_source: 'manual' });
   }
   if (type === 'bolsa') extra.positions = [];
-  const row = { user_id: uid, type, name, value: valueC / 100, eur_value: valueC / 100, currency, notes: String(b0.notes || '').slice(0, 500), extra, deleted: false };
+  const row = { user_id: uid, type, name, value: valueC / 100, eur_value: valueC / 100, currency, notes: txt(b0.notes).slice(0, 500), extra, deleted: false };
   const ins = await sb('blocks', { method: 'POST', prefer: 'return=representation', body: row });
   const b = ins[0];
   if (type === 'pe') { recomputePE(b, []); await saveBlockRow(b); }
@@ -775,7 +777,7 @@ async function actUpdateAsset(uid, b0, today) {
   const r = findAsset(blocks, b0.asset || b0.name_current || b0.name, null);
   if (!r.b) return assetNotFound(r, b0.asset || b0.name, blocks);
   const b = r.b, changes = [];
-  if (b0.new_name) { const nn = String(b0.new_name).trim().slice(0, 120); if (nn) { changes.push(`nombre → ${nn}`); b.name = nn; } }
+  if (b0.new_name) { const nn = txt(b0.new_name).slice(0, 120); if (nn) { changes.push(`nombre → ${nn}`); b.name = nn; } }
   if (b0.value !== undefined) {
     const c = toCents(b0.value);
     if (c === null || c < 0) return bad('Valor no válido.');
@@ -789,7 +791,7 @@ async function actUpdateAsset(uid, b0, today) {
     } else { b.value = b.eur_value = c / 100; }
     changes.push(`valor → ${eur(c)}`);
   }
-  if (b0.notes !== undefined) { b.notes = String(b0.notes).slice(0, 500); changes.push('notas'); }
+  if (b0.notes !== undefined) { b.notes = txt(b0.notes).slice(0, 500); changes.push('notas'); }
   // Private equity: corregir los TOTALES reales (como el botón Editar de la app). El saldo inicial se
   // calcula restando los movimientos registrados, para que los futuros capital calls sumen bien.
   if (b.type === 'pe' && (b0.called !== undefined || b0.distributed !== undefined || b0.committed !== undefined)) {
@@ -876,7 +878,7 @@ async function actTradeBolsa(uid, b0, today, type) {
       if (!p.lastPrice) p.lastPrice = price;
       msg = `✓ Compra de ${qty.toLocaleString('es-ES', { maximumFractionDigits: 6 })} ${p.ticker} a ${money(priceC, ccy)}. Ahora tienes ${p.qty.toLocaleString('es-ES', { maximumFractionDigits: 6 })} títulos, coste medio ${money(Math.round(p.entry * 100), ccy)}.`;
     } else {
-      b.extra.positions.push({ ticker: ticker || isin, name: String(b0.name || ticker || isin).slice(0, 80), isin, sector: '',
+      b.extra.positions.push({ ticker: ticker || isin, name: txt(b0.name || ticker || isin).slice(0, 80), isin, sector: '',
         qty, entry: Math.round(((qty * price + feeC / 100) / qty) * 1e6) / 1e6, lastPrice: price, currency: ccy, priceCurrency: ccy,
         type: String(b0.kind || 'EQUITY').toUpperCase() === 'ETF' ? 'ETF' : 'EQUITY' });
       msg = `✓ Nueva posición: ${qty.toLocaleString('es-ES', { maximumFractionDigits: 6 })} ${ticker || isin} a ${money(priceC, ccy)}.`;
@@ -939,7 +941,7 @@ async function actEditPosition(uid, b0) {
   if (b0.qty !== undefined) { const q2 = Number(String(b0.qty).replace(',', '.')); if (!(q2 > 0)) return bad('Cantidad no válida.'); p.qty = q2; ch.push(`títulos → ${q2.toLocaleString('es-ES', { maximumFractionDigits: 6 })}`); }
   if (b0.entry !== undefined) { const c = toCents(b0.entry); if (!c || c <= 0) return bad('Coste medio no válido.'); p.entry = c / 100; ch.push(`coste medio → ${eur(c)}`); }
   if (b0.price !== undefined) { const c = toCents(b0.price); if (!c || c <= 0) return bad('Precio no válido.'); p.lastPrice = c / 100; ch.push(`precio → ${eur(c)}`); }
-  if (b0.name) { p.name = String(b0.name).slice(0, 80); ch.push('nombre'); }
+  if (b0.name) { p.name = txt(b0.name).slice(0, 80); ch.push('nombre'); }
   if (b0.currency) { p.currency = p.priceCurrency = String(b0.currency).toUpperCase().slice(0, 3); ch.push(`divisa → ${p.currency}`); }
   if (!ch.length) return bad('¿Qué cambio? Puedo editar títulos, coste medio, precio, nombre o divisa.');
   await recalcBolsa(b); await saveBlockRow(b);
@@ -981,7 +983,7 @@ async function actEditExpense(uid, b0) {
   const { k, i } = f[0], ch = [];
   if (b0.new_amount !== undefined) { const c = toCents(b0.new_amount); if (!c || c <= 0) return bad('Importe no válido.'); i.amount = c / 100; ch.push(`importe → ${eur(c)}`); }
   if (b0.new_category) { const cat = resolveCategory(b0.new_category, ''); const ci = catInfo(cat); i.category = cat; i.icon = ci.icon; i.color = ci.color; ch.push(`categoría → ${cat}`); }
-  if (b0.new_concept) { i.concept = String(b0.new_concept).slice(0, 80); ch.push(`concepto → ${i.concept}`); }
+  if (b0.new_concept) { i.concept = txt(b0.new_concept).slice(0, 80); ch.push(`concepto → ${i.concept}`); }
   if (b0.new_date) { const d = parseDate(b0.new_date, madridToday()); if (!d) return bad('Fecha no válida.'); i.date = d; ch.push(`fecha → ${d}`); }
   if (!ch.length) return bad('¿Qué cambio? Puedo editar importe, categoría, concepto o fecha.');
   i.updated_at = new Date().toISOString();
@@ -1024,7 +1026,7 @@ async function actPeDeleteMovement(uid, b0) {
 // Sube un archivo (base64 o URL) al mismo almacén que la app (wealth-docs) y crea su ficha en `documents`.
 const DOC_TYPES = ['report_pe','capital_call','distribution','extracto','boleta','nomina','factura','contrato','otro'];
 async function actUploadDocument(uid, b0) {
-  const filename = String(b0.filename || '').trim().slice(0, 140);
+  const filename = txt(b0.filename).slice(0, 140);
   if (!filename) return bad('Necesito el nombre del archivo (por ejemplo, capital_call_3.pdf).');
   let bytes, contentType = String(b0.content_type || '').slice(0, 80);
   if (b0.content_base64) {
@@ -1052,7 +1054,7 @@ async function actUploadDocument(uid, b0) {
   if (!up.ok) { const t = await up.text(); return bad(`No he podido guardar el archivo en Orbit (${up.status}): ${t.slice(0, 120)}`); }
   const extracted = (b0.data && typeof b0.data === 'object') ? b0.data : {};
   await sb('documents', { method: 'POST', prefer: 'return=minimal', body: { user_id: uid, filename, doc_type: docType, block_id: blockId,
-    extracted_data: { ...extracted, _origen: 'instinct' }, ai_summary: String(b0.summary || '').slice(0, 2000), file_size: bytes.length, storage_path: path } });
+    extracted_data: { ...extracted, _origen: 'instinct' }, ai_summary: txt(b0.summary).slice(0, 2000), file_size: bytes.length, storage_path: path } });
   return ok(`✓ Documento guardado en Orbit: ${filename}${assetName ? ` (en ${assetName})` : ''}. Lo verás en Documentos.`, { storage_path: path });
 }
 

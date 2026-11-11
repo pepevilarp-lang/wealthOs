@@ -130,6 +130,12 @@ check('9. PE: mismo request_id no duplica el call', db.pe_transactions.filter(t 
   check('10. Sin token → 401', out.status === 401, `status=${out.status}`);
 }
 
+// ── 11. Texto con código: se guarda sin < ni > ─────────────────────────
+reset();
+await call('POST', 'expenses', { id: 'x1', amount: 5, concept: '<img src=x onerror=alert(1)>Café', affect_cash: false });
+{ const it = Object.values(db.user_expense_data[0].data).flatMap(m => m.items)[0];
+  check('11. Un concepto con <img onerror> se guarda sin etiquetas', !/[<>]/.test(it.concept), `concepto guardado: ${it.concept}`); }
+
 for (const x of results) console.log(`${x.ok ? 'PASA ' : 'FALLA'}  ${x.name}  —  ${x.detail}`);
 console.log(`\n${results.filter(x => x.ok).length}/${results.length} correctas`);
 if (results.some(x => !x.ok)) process.exitCode = 1;

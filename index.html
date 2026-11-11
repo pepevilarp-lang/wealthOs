@@ -1484,6 +1484,28 @@ const setText = (id,v) => {const e=$(id);if(e)e.textContent=v};
 
 // Seguridad: escape HTML real para contenido externo (noticias, IA, nombres)
 function escH(s){ return s==null ? '' : String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
+// Segunda barrera contra código inyectado: los textos que escribe el usuario o llegan de fuera (extractos,
+// hoja de Google, Instinct, titulares) nunca contienen < ni >. Se limpian al cargar, venga de donde venga.
+function safeUrl(u){ const t = String(u || '').trim(); return /^https?:\/\//i.test(t) ? escH(t) : '#'; }
+function cleanText(s){ return typeof s === 'string' ? s.replace(/[<>]/g, '') : s; }
+function sanitizeBlocks(list){
+  for (const b of (list || [])) {
+    if (!b) continue;
+    b.name = cleanText(b.name); b.notes = cleanText(b.notes);
+    const ex = b.extra; if (!ex || typeof ex !== 'object') continue;
+    for (const k of ['gp','broker','gestora','vintage','estrategia']) ex[k] = cleanText(ex[k]);
+    for (const p of (Array.isArray(ex.positions) ? ex.positions : [])) for (const k of ['name','ticker','isin','sector']) p[k] = cleanText(p[k]);
+  }
+  return list;
+}
+function sanitizeExpenses(data){
+  if (!data || typeof data !== 'object') return data;
+  for (const m of Object.values(data)) for (const i of ((m && Array.isArray(m.items)) ? m.items : [])) {
+    i.concept = cleanText(i.concept); i.category = cleanText(i.category); i.account_name = cleanText(i.account_name);
+  }
+  return data;
+}
+function sanitizeDocs(list){ for (const d of (list || [])) if (d) { d.filename = cleanText(d.filename); d.ai_summary = cleanText(d.ai_summary); } return list; }
 // Solo deja pasar URLs http(s); bloquea javascript:, data:, etc.
 function safeUrl(u){ const s=String(u==null?'':u).trim(); return /^https?:\/\//i.test(s) ? s.replace(/"/g,'%22') : ''; }
 window.escH = escH; window.safeUrl = safeUrl;
@@ -1538,7 +1560,7 @@ function toastUndo(msg){
   d.className='toast';
   d.style.borderLeft='3px solid var(--gold)';
   d.style.display='flex'; d.style.alignItems='center'; d.style.gap='12px'; d.style.justifyContent='space-between';
-  d.innerHTML=`<span>${msg}</span>`;
+  const sp=document.createElement('span'); sp.textContent=msg; d.appendChild(sp);
   const btn=document.createElement('button');
   btn.textContent='Deshacer';
   btn.style.cssText='background:none;border:0;color:var(--gold);font-weight:700;font-size:13px;cursor:pointer;white-space:nowrap;padding:2px 4px';
@@ -1787,7 +1809,7 @@ async function refreshFromCloud(){
       q(sb.from('pe_transactions').select('*').eq('user_id', user.id).order('date', { ascending: false })),
       q(sb.from('patrimonio_history').select('*').eq('user_id', user.id).order('date')),
     ]);
-    blocks = nb; docs = nd; txs = nt; history = nh;
+    blocks = sanitizeBlocks(nb); docs = sanitizeDocs(nd); txs = nt; history = nh;
     for (const b of blocks) { try { if (recomputePE(b)) await saveBlockDB(b); } catch(e){} }
     await kvSync();
     try { await syncExpenseDataFromCloud(); } catch(e){}
@@ -1823,6 +1845,7 @@ async function loadAll() {
   docs    = await safeLoad('documents', sb.from('documents').select('*').eq('user_id',user.id).order('created_at',{ascending:false}));
   history = await safeLoad('history',  sb.from('patrimonio_history').select('*').eq('user_id',user.id).order('date'));
   txs     = await safeLoad('pe_transactions', sb.from('pe_transactions').select('*').eq('user_id',user.id).order('date',{ascending:false}));
+  sanitizeBlocks(blocks); sanitizeDocs(docs);
   // Totales de private equity calculados desde los movimientos (fuente única de verdad)
   for (const b of blocks) {
     try { if (recomputePE(b)) await saveBlockDB(b); } catch(e) { console.error('[PE] recalcular', b?.name, e); }
@@ -2271,7 +2294,7 @@ function renderOnbSteps() {
   const s = steps[onbStep];
   $('onb-card').innerHTML = `
     <div class="onb-step">${s.label}</div>
-    <div class="onb-title">${s.title}</div>
+    <div class="onb-title">${escH(s.title)}</div>
     <div class="onb-sub">${s.sub}</div>
     <div class="onb-prog">${prog}</div>
     ${s.body}
@@ -2354,7 +2377,7 @@ function renderOnbPreview() {
     <div style="background:linear-gradient(135deg,var(--ink,#0f1c3c),#16264d);border-radius:14px;padding:20px;margin-bottom:18px;color:#fff">
       <div style="font-size:10.5px;color:rgba(255,255,255,.55);text-transform:uppercase;letter-spacing:.5px;font-weight:600">Tu patrimonio</div>
       <div style="font-family:var(--display);font-size:34px;font-weight:500;letter-spacing:-1px;margin-top:2px">${fE(patrimonio)}</div>
-      ${firstBlock ? `<div style="font-size:11.5px;color:rgba(255,255,255,.6);margin-top:4px">Empezando con ${firstBlock.name}</div>` : ''}
+      ${firstBlock ? `<div style="font-size:11.5px;color:rgba(255,255,255,.6);margin-top:4px">Empezando con ${escH(firstBlock.name)}</div>` : ''}
       <div style="height:1px;background:rgba(255,255,255,.1);margin:14px 0"></div>
       <div style="display:flex;justify-content:space-between;font-size:11px;color:rgba(255,255,255,.7)">
         <div><div style="color:rgba(255,255,255,.5);font-size:9.5px;text-transform:uppercase;letter-spacing:.5px">Nivel</div><div style="margin-top:2px;font-weight:600;color:#fff">${levelLabels[onbData.level]||'Principiante'}</div></div>
@@ -2811,7 +2834,7 @@ function renderMobNav() {
     ${groupBlocksByType().map(([t,bs])=>`
       <div class="sb-label" style="color:${BT[t].color}">${BT[t].ic} ${BT[t].label}</div>
       <div class="sb-block">
-        ${bs.map(b=>`<button class="ni" onclick="closeMob();gotoBlock('${b.id}')"><span class="ni-ic">›</span>${b.name}</button>`).join('')}
+        ${bs.map(b=>`<button class="ni" onclick="closeMob();gotoBlock('${b.id}')"><span class="ni-ic">›</span>${escH(b.name)}</button>`).join('')}
       </div>`).join('')}
     <div class="sb-label">Tu cartera</div>
     ${it('performance','<i class="ti ti-chart-line"></i>','Performance')}
@@ -2856,7 +2879,7 @@ function renderSidebar() {
       <div class="sb-block">
         ${bs.map(b=>`<button class="ni" data-bid="${b.id}" onclick="gotoBlock('${b.id}')">
           <span class="ni-ic">›</span>
-          <span style="flex:1;text-overflow:ellipsis;overflow:hidden;white-space:nowrap">${b.name}</span>
+          <span style="flex:1;text-overflow:ellipsis;overflow:hidden;white-space:nowrap">${escH(b.name)}</span>
         </button>`).join('')}
       </div>
     </div>`;
@@ -3186,7 +3209,7 @@ function renderPatr() {
               <div class="bcard-icon" style="background:${BT[b.type].color}20;color:${BT[b.type].color}">${BT[b.type].ic}</div>
               <div class="bcard-pct">${total()>0?((( b.eur_value||b.value||0)/total())*100).toFixed(0):0}%</div>
             </div>
-            <div class="bcard-name">${b.name}</div>
+            <div class="bcard-name">${escH(b.name)}</div>
             <div class="bcard-sub">${b.notes||BT[b.type].label}</div>
             <div class="bcard-val">${fE(b.eur_value||b.value||0)}</div>
             <div class="bcard-meta">${b.updated_at?'Actualizado '+fD(b.updated_at):'—'}</div>
@@ -3246,7 +3269,7 @@ function renderBlockDetail(id) {
     <div class="detail-h">
       <div class="detail-icon" style="background:${BT[b.type].color}20;color:${BT[b.type].color}">${BT[b.type].ic}</div>
       <div class="detail-info">
-        <div class="detail-name">${b.name}</div>
+        <div class="detail-name">${escH(b.name)}</div>
         <div class="detail-sub">
           <span>${BT[b.type].label}</span>
           <span>${pct}% del patrimonio</span>
@@ -3275,7 +3298,7 @@ function renderBlockDetail(id) {
 
   // Notes
   if (b.notes) {
-    body += `<div class="card" style="margin-bottom:14px"><div class="card-hd"><div class="card-ti">Notas</div></div><div class="card-bd" style="font-size:12.5px;color:var(--t-2);line-height:1.65">${b.notes}</div></div>`;
+    body += `<div class="card" style="margin-bottom:14px"><div class="card-hd"><div class="card-ti">Notas</div></div><div class="card-bd" style="font-size:12.5px;color:var(--t-2);line-height:1.65">${escH(b.notes)}</div></div>`;
   }
 
   // Documents
@@ -3285,7 +3308,7 @@ function renderBlockDetail(id) {
         ${bDocs.length ? bDocs.map(d=>`<div class="doc">
           <div class="doc-ic">▤</div>
           <div style="flex:1;min-width:0">
-            <div class="doc-name">${d.filename}</div>
+            <div class="doc-name">${escH(d.filename)}</div>
             <div class="doc-meta">${fD(d.created_at||d.date)} · ${d.doc_type||''}${d.storage_path?' · 📎':''}</div>
             ${d.ai_summary?`<div class="doc-summary">✓ ${d.ai_summary}</div>`:''}
           </div>
@@ -3311,7 +3334,7 @@ function renderBlockDetail(id) {
 
   // Delete
   body += `<div style="margin-top:20px;padding-bottom:24px">
-    <button class="btn btn-danger btn-xs" onclick="if(confirm('¿Eliminar ${b.name}? Esta acción no se puede deshacer.'))deleteBlockUI('${b.id}')">Eliminar activo</button>
+    <button class="btn btn-danger btn-xs" onclick="if(confirm('¿Eliminar este activo ('+((blocks.find(x=>x.id=='${b.id}')||{}).name||'')+')? Esta acción no se puede deshacer.'))deleteBlockUI('${b.id}')">Eliminar activo</button>
   </div>`;
 
   el.innerHTML = body;
@@ -3384,8 +3407,8 @@ function renderPESection(b) {
     <div class="card" style="margin-bottom:14px">
       <div class="card-bd">
         <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:${(ex.gp||ex.vintage||ex.estrategia)?'14px':'0'}">
-          ${ex.gp?`<span class="tag">GP · ${ex.gp}</span>`:''}
-          ${ex.vintage?`<span class="tag">Vintage · ${ex.vintage}</span>`:''}
+          ${ex.gp?`<span class="tag">GP · ${escH(ex.gp)}</span>`:''}
+          ${ex.vintage?`<span class="tag">Vintage · ${escH(ex.vintage)}</span>`:''}
           ${ex.estrategia?`<span class="tag">Estrategia · ${ex.estrategia}</span>`:''}
           ${ex.geografia?`<span class="tag">Geografía · ${ex.geografia}</span>`:''}
           ${!ex.gp&&!ex.vintage&&!ex.estrategia?`<div style="font-size:12px;color:var(--t-3)">Edita el activo para añadir GP, vintage, estrategia y geografía.</div>`:''}
@@ -3446,7 +3469,7 @@ function renderPESection(b) {
       <div class="card-hd">
         <div class="card-ti">Histórico de movimientos</div>
         <button class="btn btn-soft btn-xs" onclick="openTxModal('${b.id}')">+ Registrar movimiento</button>
-        <button class="btn btn-ghost btn-xs" onclick="askAdvisor('¿Qué análisis haces de ${b.name}?')">💬 Mentor</button>
+        <button class="btn btn-ghost btn-xs" onclick="askAdvisor('¿Qué análisis haces de ${escH(b.name)}?')">💬 Mentor</button>
       </div>
       <div>
         ${blockTxs.length ? blockTxs.map(t=>`
@@ -3605,7 +3628,7 @@ function renderBolsaSection(b) {
     <div class="card" style="margin-bottom:14px">
       <div class="card-hd">
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-          ${ex.broker ? `<span class="tag" style="font-size:12px;font-weight:600">🏦 ${ex.broker}</span>` : ''}
+          ${ex.broker ? `<span class="tag" style="font-size:12px;font-weight:600">🏦 ${escH(ex.broker)}</span>` : ''}
           ${ex.currency ? `<span class="tag">${ex.currency}</span>` : ''}
           ${positions.length ? `<span class="tag">${positions.length} posiciones</span>` : ''}
           ${ex.lastPriceUpdate ? `<span class="tag" style="background:rgba(14,159,110,.08);color:var(--pos);font-size:10px">● Precios ${fRelTime(ex.lastPriceUpdate)}</span>` : ''}
@@ -3739,7 +3762,7 @@ function renderBolsaSection(b) {
                           ${isRobo ? '<span style="font-size:18px">🤖</span>' : logoAvatar(p.ticker, p.name, 26)}
                           <div>
                             <div style="font-family:var(--mono);font-weight:700;color:var(--t-1);font-size:12.5px">${p.ticker || p.name || '—'}</div>
-                            ${p.name && p.ticker !== p.name ? `<div style="font-size:10px;color:var(--t-4)">${p.name}</div>` : ''}
+                            ${p.name && p.ticker !== p.name ? `<div style="font-size:10px;color:var(--t-4)">${escH(p.name)}</div>` : ''}
                             ${isRobo && p.platform ? `<div style="font-size:10px;color:var(--t-4)">${p.platform}${p.plan ? ' · ' + p.plan : ''}</div>` : ''}
                           </div>
                         </div>
@@ -3805,7 +3828,7 @@ function renderBolsaSection(b) {
           <div class="doc">
             <div class="doc-ic">📄</div>
             <div style="flex:1;min-width:0">
-              <div class="doc-name">${d.filename}</div>
+              <div class="doc-name">${escH(d.filename)}</div>
               <div class="doc-meta">${fD(d.created_at||d.date)} · ${d.doc_type||'boleta'}${d.storage_path?' · 📎':''}</div>
               ${d.ai_summary ? `<div class="doc-summary">✓ ${d.ai_summary}</div>` : ''}
             </div>
@@ -3830,7 +3853,7 @@ function renderBolsaSection(b) {
               <tr>
                 <td style="font-size:11px;color:var(--t-3)">${fD(t.date)}</td>
                 <td><span style="display:inline-block;padding:2px 8px;border-radius:4px;font-size:10.5px;font-weight:600;background:${t.type==='buy'?'var(--pos-bg)':'var(--neg-bg)'};color:${t.type==='buy'?'var(--pos)':'var(--neg)'}">${t.type==='buy'?'COMPRA':'VENTA'}</span></td>
-                <td class="mono" style="font-weight:700">${t.ticker}</td>
+                <td class="mono" style="font-weight:700">${escH(t.ticker)}</td>
                 <td class="r mono">${t.qty}</td>
                 <td class="r mono">${fE(t.price)}</td>
                 <td class="r mono" style="font-weight:600">${fE(t.qty*t.price)}</td>
@@ -4817,7 +4840,7 @@ function loadExpenseData() {
       }
     }
     
-    if (saved) expenseData = JSON.parse(saved);
+    if (saved) expenseData = sanitizeExpenses(JSON.parse(saved));
     else expenseData = {};
   } catch(e) { 
     console.warn('load expenseData:', e); 
@@ -4881,7 +4904,7 @@ async function saveExpenseData() {
     try {
       const { data: cloud, error } = await sb.from('user_expense_data').select('data,updated_at').eq('user_id', user.id).maybeSingle();
       if (error) throw error;
-      if (cloud && cloud.data) _mergeCloudNewItems(cloud.data);
+      if (cloud && cloud.data) _mergeCloudNewItems(sanitizeExpenses(cloud.data));
     } catch(e) { console.warn('[gastos] No se pudo comprobar la nube antes de guardar:', e); }
   }
   const ts = Date.now();
@@ -4917,7 +4940,7 @@ async function syncExpenseDataFromCloud() {
   if (cloud && cloud.data && Object.keys(cloud.data).length) {
     const cloudTs = cloud.updated_at ? new Date(cloud.updated_at).getTime() : 0;
     if (!localKeys || cloudTs > localTs) {
-      expenseData = cloud.data;
+      expenseData = sanitizeExpenses(cloud.data);
       try {
         localStorage.setItem(expenseStorageKey(), JSON.stringify(expenseData));
         localStorage.setItem(expenseTsKey(), String(cloudTs || Date.now()));
@@ -4929,7 +4952,7 @@ async function syncExpenseDataFromCloud() {
     } else if (localKeys && localTs > cloudTs) {
       // Este dispositivo tiene datos más recientes que la nube → fusionar lo nuevo de la nube y subir
       try {
-        if (_mergeCloudNewItems(cloud.data)) { try { localStorage.setItem(expenseStorageKey(), JSON.stringify(expenseData)); } catch(e) {} }
+        if (_mergeCloudNewItems(sanitizeExpenses(cloud.data))) { try { localStorage.setItem(expenseStorageKey(), JSON.stringify(expenseData)); } catch(e) {} }
         const { error } = await sb.from('user_expense_data')
           .upsert({ user_id: user.id, data: expenseData, updated_at: new Date(localTs).toISOString() });
         if (error) throw error;
@@ -5471,7 +5494,7 @@ function changeAccountForMovs(currentAccId) {
     return `
       <button data-account-id="${acc.id}" onclick="reassignMovs('${currentAccId}','${acc.id}');this.closest('.overlay').remove();" ${isCurrent ? 'disabled' : ''} style="text-align:left;padding:14px 16px;background:var(--surf);border:1.5px solid ${isCurrent ? 'var(--gold)' : 'var(--line)'};border-radius:12px;cursor:${isCurrent ? 'default' : 'pointer'};width:100%;display:flex;justify-content:space-between;align-items:center;gap:12px;${isCurrent ? 'opacity:.5' : ''}">
         <div>
-          <div style="font-size:13.5px;font-weight:600;color:var(--t-1)">${acc.name}${isCurrent ? ' (actual)' : ''}</div>
+          <div style="font-size:13.5px;font-weight:600;color:var(--t-1)">${escH(acc.name)}${isCurrent ? ' (actual)' : ''}</div>
           <div style="font-size:11px;color:var(--t-3);margin-top:2px">Cuenta cash</div>
         </div>
         <div style="font-size:13px;font-weight:600;color:var(--t-2);font-family:var(--mono)">${fE(balance)}</div>
@@ -5528,7 +5551,7 @@ function askExpenseAccount(filename, cashBlocks) {
       return `
         <button data-account-id="${acc.id}" class="account-pick-btn" style="text-align:left;padding:14px 16px;background:var(--surf);border:1.5px solid var(--line);border-radius:12px;cursor:pointer;transition:all .15s;width:100%;display:flex;justify-content:space-between;align-items:center;gap:12px">
           <div>
-            <div style="font-size:13.5px;font-weight:600;color:var(--t-1)">${acc.name}</div>
+            <div style="font-size:13.5px;font-weight:600;color:var(--t-1)">${escH(acc.name)}</div>
             <div style="font-size:11px;color:var(--t-3);margin-top:2px">Cuenta cash</div>
           </div>
           <div style="font-size:13px;font-weight:600;color:var(--t-2);font-family:var(--mono)">${fE(balance)}</div>
@@ -5916,7 +5939,7 @@ function renderForecastRunway(months) {
 
     forecastBlock = `
       <div style="padding:14px 16px;background:rgba(37,99,235,.05);border-radius:10px;margin-bottom:14px;border:1px solid rgba(37,99,235,.15)">
-        <div style="font-size:10.5px;color:var(--gold);text-transform:uppercase;letter-spacing:.5px;font-weight:700;margin-bottom:8px">🔮 Proyección de ${lastMonth.name} (día ${daysElapsed})</div>
+        <div style="font-size:10.5px;color:var(--gold);text-transform:uppercase;letter-spacing:.5px;font-weight:700;margin-bottom:8px">🔮 Proyección de ${escH(lastMonth.name)} (día ${daysElapsed})</div>
         <div style="font-size:12.5px;color:var(--t-2);line-height:1.6">
           Llevas gastado <strong style="color:var(--t-1);font-family:var(--mono)">${fE(lastSpent)}</strong> este mes.
           Al ritmo actual (${fE(dailyRate)}/día), terminarás cerca de <strong style="color:var(--neg);font-family:var(--mono)">${fE(projectedExpense)}</strong>.
@@ -6058,7 +6081,7 @@ function renderBudgets(months) {
     <div class="card" style="margin-bottom:14px">
       <div class="card-hd">
         <div class="card-ti">🎯 Presupuestos por categoría</div>
-        <div style="font-size:11px;color:var(--t-4)">${lastMonth.name}</div>
+        <div style="font-size:11px;color:var(--t-4)">${escH(lastMonth.name)}</div>
       </div>
       <div class="card-bd">
         ${!hasBudgets ? `<div style="font-size:11.5px;color:var(--t-3);line-height:1.55;margin-bottom:12px">Define un límite mensual por categoría y te avisaré cuando te acerques o lo superes. Pulsa <strong>+ Límite</strong> en cualquier categoría.</div>` : ''}
@@ -6216,7 +6239,7 @@ function showCategoryDrilldown(encodedCat) {
           ${items.map((it, i) => `
             <div style="display:flex;justify-content:space-between;align-items:center;padding:9px 12px;background:var(--surf-2);border-radius:6px;gap:10px">
               <div style="flex:1;min-width:0">
-                <div style="font-size:12.5px;color:var(--t-1);font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${it.concept}</div>
+                <div style="font-size:12.5px;color:var(--t-1);font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escH(it.concept)}</div>
                 <div style="font-size:10.5px;color:var(--t-3);margin-top:1px">${it.monthName}${it.date ? ' · ' + it.date : ''}</div>
               </div>
               <span style="font-family:var(--mono);font-weight:600;color:var(--t-1)">${fE(it.amount)}</span>
@@ -6488,7 +6511,7 @@ function renderFlujosInsights(months) {
             <div style="padding:12px 16px;background:${col.bg};border-left:3px solid ${col.c};border-bottom:1px solid var(--line-2);display:flex;gap:10px;align-items:flex-start">
               <span style="font-size:18px;flex-shrink:0">${ins.icon}</span>
               <div style="flex:1">
-                <div style="font-size:12.5px;font-weight:600;color:var(--t-1);margin-bottom:2px">${ins.title}</div>
+                <div style="font-size:12.5px;font-weight:600;color:var(--t-1);margin-bottom:2px">${escH(ins.title)}</div>
                 <div style="font-size:11.5px;color:var(--t-2);line-height:1.5">${ins.body}</div>
               </div>
             </div>
@@ -6699,7 +6722,7 @@ function renderRecurringExpenses(months) {
             <div style="font-size:10.5px;color:var(--t-4);margin-top:2px">${recurring.length} gastos recurrentes</div>
           </div>
           <div style="padding:12px;background:rgba(217,168,32,.06);border-radius:8px">
-            <div style="font-size:10px;color:var(--t-3);text-transform:uppercase;letter-spacing:.5px;font-weight:600">Variables (${lastMonth.name})</div>
+            <div style="font-size:10px;color:var(--t-3);text-transform:uppercase;letter-spacing:.5px;font-weight:600">Variables (${escH(lastMonth.name)})</div>
             <div style="font-family:var(--mono);font-size:20px;font-weight:600;color:var(--gold);margin-top:4px">${fE(variableTotal)}</div>
             <div style="font-size:10.5px;color:var(--t-4);margin-top:2px">Decisiones discrecionales</div>
           </div>
@@ -6711,7 +6734,7 @@ function renderRecurringExpenses(months) {
             <div onclick="showRecurringDetail('${encodeURIComponent(r.concept)}')" style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:var(--surf-2);border-radius:6px;font-size:12px;cursor:pointer;transition:all .15s;border:1px solid transparent" onmouseover="this.style.background='var(--surf-3,#eef2f7)';this.style.borderColor='var(--line)'" onmouseout="this.style.background='var(--surf-2)';this.style.borderColor='transparent'">
               <div style="display:flex;align-items:center;gap:8px;flex:1;min-width:0">
                 <span>${r.icon || '•'}</span>
-                <span style="color:var(--t-1);font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${r.concept}</span>
+                <span style="color:var(--t-1);font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escH(r.concept)}</span>
                 <span style="font-size:10px;color:var(--t-4);background:var(--bg);padding:1px 6px;border-radius:4px">${r.count} veces</span>
               </div>
               <div style="display:flex;align-items:center;gap:6px">
@@ -7101,7 +7124,7 @@ function renderFlujos() {
       
       // Lista de cuentas cash existentes para el dropdown
       const cashAccounts = blocks.filter(b => !b.deleted && b.type === 'cash');
-      const dropdownOptions = cashAccounts.map(c => `<option value="${c.id}">${c.name}</option>`).join('');
+      const dropdownOptions = cashAccounts.map(c => `<option value="${c.id}">${escH(c.name)}</option>`).join('');
       
       return `
         <div class="card" style="margin-bottom:14px">
@@ -7124,7 +7147,7 @@ function renderFlujos() {
                   const neto = a.income - a.expense;
                   const isUnassigned = a.accId === 'sin_cuenta';
                   return `<tr>
-                    <td style="font-weight:500">${isUnassigned ? '<span style="color:var(--neg)">⚠ </span>' : ''}${a.name}</td>
+                    <td style="font-weight:500">${isUnassigned ? '<span style="color:var(--neg)">⚠ </span>' : ''}${escH(a.name)}</td>
                     <td class="r mono" style="color:var(--pos)">${fE(a.income)}</td>
                     <td class="r mono" style="color:var(--neg)">${fE(a.expense)}</td>
                     <td class="r mono" style="color:${neto>=0?'var(--pos)':'var(--neg)'};font-weight:600">${neto>=0?'+':''}${fE(neto)}</td>
@@ -7173,8 +7196,8 @@ function renderFlujos() {
           ${activeMonths.map(m => {
             const rate = m.totalIncome > 0 ? (m.savings/m.totalIncome*100) : 0;
             const ok = m.target > 0 ? m.savings >= m.target : null;
-            return `<tr onclick="showMonthDetail('${m.name}')">
-              <td style="font-weight:500">${m.name}</td>
+            return `<tr onclick="showMonthDetail('${escH(m.name)}')">
+              <td style="font-weight:500">${escH(m.name)}</td>
               <td class="r mono">${fE(m.nomina)}</td>
               <td class="r mono" style="color:var(--neg)">${fE(m.totalExpense)}</td>
               <td class="r mono" style="color:${m.savings>0?'var(--pos)':'var(--neg)'}">${fE(m.savings)}</td>
@@ -7265,7 +7288,7 @@ function showMonthDetail(monthName) {
   overlay.innerHTML = `
     <div class="modal modal-lg" onclick="event.stopPropagation()">
       <div class="mh">
-        <div class="mh-t">${m.name} 2026</div>
+        <div class="mh-t">${escH(m.name)} 2026</div>
         <div style="display:flex;gap:6px;align-items:center">
           <button class="btn btn-soft btn-xs" onclick="deleteMonth('${monthName}',this)" title="Eliminar este mes" style="color:var(--neg);padding:4px 9px">🗑 Eliminar mes</button>
           <button class="mh-c" onclick="this.closest('.overlay').remove()">✕</button>
@@ -7292,7 +7315,7 @@ function showMonthDetail(monthName) {
             <tbody>
               ${m.items.sort((a,b)=>b.amount-a.amount).map(item=>`
                 <tr>
-                  <td>${item.concept}</td>
+                  <td>${escH(item.concept)}</td>
                   <td><span style="display:inline-flex;align-items:center;gap:5px;background:${item.color}15;padding:2px 8px;border-radius:4px;font-size:11px;color:${item.color}">${item.icon} ${item.category}</span></td>
                   <td class="r mono" style="color:var(--neg)">${fE(item.amount)}</td>
                 </tr>`).join('')}
@@ -7408,7 +7431,7 @@ function renderDocs() {
                     ${ar.needed && daysLeft !== null ? `<span style="font-size:10px;color:${daysLeft < 7 ? 'var(--neg)' : 'var(--t-3)'};font-weight:${daysLeft < 7 ? '600' : '400'}">${daysLeft >= 0 ? 'en ' + daysLeft + ' días' : 'vencido'}</span>` : ''}
                   </div>
                   <div style="font-size:13.5px;font-weight:500;color:var(--t-1);line-height:1.3;margin-bottom:2px">${analysis.headline || d.filename}</div>
-                  <div style="font-size:11px;color:var(--t-3)">${d.filename} · ${fD(d.created_at||d.date)}${b ? ' · ' + b.name : ''}${d.storage_path ? ' · 📎' : ''}</div>
+                  <div style="font-size:11px;color:var(--t-3)">${escH(d.filename)} · ${fD(d.created_at||d.date)}${b ? ' · ' + b.name : ''}${d.storage_path ? ' · 📎' : ''}</div>
                 </div>
                 <div style="display:flex;gap:6px;align-items:flex-start" onclick="event.stopPropagation()">
                   <button class="btn btn-soft btn-xs" onclick="showDocAnalysis('${d.id}')" title="Ver análisis">📖</button>
@@ -7425,8 +7448,8 @@ function renderDocs() {
             <div class="doc">
               <div class="doc-ic">▤</div>
               <div style="flex:1;min-width:0">
-                <div class="doc-name">${d.filename}</div>
-                <div class="doc-meta">${fD(d.created_at||d.date)} · ${d.doc_type||'documento'}${b?` · vinculado a ${b.name}`:''}${d.storage_path?' · 📎 archivo':''}</div>
+                <div class="doc-name">${escH(d.filename)}</div>
+                <div class="doc-meta">${fD(d.created_at||d.date)} · ${d.doc_type||'documento'}${b?` · vinculado a ${escH(b.name)}`:''}${d.storage_path?' · 📎 archivo':''}</div>
                 ${d.ai_summary?`<div class="doc-summary">✓ ${d.ai_summary}</div>`:''}
               </div>
               <div style="display:flex;gap:6px;align-items:flex-start">
@@ -8483,9 +8506,9 @@ function renderShareCard(s, dir){
       <div style="font-size:11px;color:var(--t-3);margin-bottom:6px">${who} · ${when}${s.reason?` · ${s.reason}`:''}</div>
       <div style="font-size:14.5px;font-weight:600;color:var(--t-1);line-height:1.35;font-family:var(--display)">${a.title||''}</div>
       ${a.source?`<div style="font-size:10.5px;color:var(--t-4);margin-top:4px">${a.source}</div>`:''}
-      ${s.note?`<div style="font-size:13px;color:var(--t-1);line-height:1.5;margin-top:10px;background:var(--surf-2);border-radius:9px;padding:10px 12px">💬 ${s.note}</div>`:''}
+      ${s.note?`<div style="font-size:13px;color:var(--t-1);line-height:1.5;margin-top:10px;background:var(--surf-2);border-radius:9px;padding:10px 12px">💬 ${escH(s.note)}</div>`:''}
       <div style="display:flex;gap:6px;margin-top:10px;flex-wrap:wrap">
-        ${a.url?`<a href="${a.url}" target="_blank" rel="noopener" class="btn btn-soft btn-xs" style="text-decoration:none"><i class="ti ti-external-link" style="vertical-align:-2px;margin-right:5px"></i>Leer</a>`:''}
+        ${a.url?`<a href="${safeUrl(a.url)}" target="_blank" rel="noopener" class="btn btn-soft btn-xs" style="text-decoration:none"><i class="ti ti-external-link" style="vertical-align:-2px;margin-right:5px"></i>Leer</a>`:''}
         <button class="btn btn-soft btn-xs" onclick="askSharedArticle('${s.id}')"><i class="ti ti-sparkles" style="vertical-align:-2px;margin-right:5px"></i>Explícamela</button>
         <button class="btn btn-primary btn-xs" onclick="toggleShareThread('${s.id}')"><i class="ti ti-messages" style="vertical-align:-2px;margin-right:5px"></i>Conversación</button>
       </div>
@@ -8558,7 +8581,7 @@ function renderFollowedView(){
         const msgs=convo.map(m=>`<div style="margin:7px 0"><span style="font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:${m.role==='user'?'#1d4ed8':'var(--t-3)'}">${m.role==='user'?'Tú':'Mentor'}</span><div style="font-size:12px;color:var(--t-1);line-height:1.5;margin-top:2px;white-space:pre-wrap">${(m.content||'').slice(0,600)}</div></div>`).join('');
         return `<div style="padding:0 18px 8px"><div onclick="toggleStoryConvo('${s.id}')" style="cursor:pointer;font-size:10.5px;font-weight:700;color:var(--t-3);text-transform:uppercase;letter-spacing:.5px;padding:8px 0">💬 Conversación con el Mentor (${convo.length}) ▾</div><div id="convo-${s.id}" style="display:none;background:var(--surf-2);border-radius:8px;padding:10px 13px">${msgs}</div></div>`; })()}
       <div style="padding:10px 18px;border-top:1px solid var(--line);display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap">
-        ${s.url?`<a href="${s.url}" target="_blank" rel="noopener" class="btn btn-soft btn-xs" style="text-decoration:none">🔗 Original</a>`:''}
+        ${s.url?`<a href="${safeUrl(s.url)}" target="_blank" rel="noopener" class="btn btn-soft btn-xs" style="text-decoration:none">🔗 Original</a>`:''}
         <button class="btn btn-soft btn-xs" id="upd-${s.id}" onclick="updateFollowed('${s.id}')"><i class="ti ti-refresh" style="vertical-align:-2px;margin-right:5px"></i>Actualizar</button>
         <button class="btn btn-soft btn-xs" onclick="reopenStoryChat('${s.id}')"><i class="ti ti-message-circle" style="vertical-align:-2px;margin-right:5px"></i>Seguir hablando</button>
         <button class="btn btn-soft btn-xs" onclick="shareFollowed('${s.id}')"><i class="ti ti-share-3" style="vertical-align:-2px;margin-right:5px"></i>Compartir</button>
@@ -8906,6 +8929,7 @@ window.generateDailyBrief=generateDailyBrief;
 
 // ─── Renderizar el feed con tarjetas según impacto ───
 function renderInsightsFeed(insights, ts, fromExpiredCache = false) {
+  for (const i of (insights || [])) if (i) for (const k of ['title','summary','why','source','accion','category']) i[k] = cleanText(i[k]);
   const feed = document.getElementById('insights-feed');
   const counter = document.getElementById('ins-count');
   if (!feed) return;
@@ -9447,7 +9471,7 @@ function renderNewsArticles(articles, el, ts, fromCache = false) {
     const safeUrl = (a.url||'#').replace(/'/g, '%27').replace(/"/g, '%22');
     return `
     <div onclick="window.open('${safeUrl}','_blank','noopener')" style="padding:14px 16px;border-bottom:1px solid var(--line-2);cursor:pointer;transition:background .12s" onmouseover="this.style.background='var(--surf-2)'" onmouseout="this.style.background=''">
-      <div style="font-size:12.5px;font-weight:500;color:var(--t-1);margin-bottom:4px;line-height:1.4">${a.title}</div>
+      <div style="font-size:12.5px;font-weight:500;color:var(--t-1);margin-bottom:4px;line-height:1.4">${escH(a.title)}</div>
       ${a.summary ? `<div style="font-size:11px;color:var(--t-3);line-height:1.4;margin-bottom:6px">${a.summary}</div>` : ''}
       <div style="display:flex;gap:8px;font-size:10px;color:var(--t-4);align-items:center;flex-wrap:wrap">
         <span>📰 ${a.source || 'Fuente'}</span>
@@ -9576,8 +9600,8 @@ function renderReaderContent() {
   const ctxParas = (content.tu_contexto || '').split('\n\n').filter(p => p.trim());
   
   body.innerHTML = `
-    <div style="font-family:var(--display);font-size:19px;font-weight:600;color:var(--t-1);line-height:1.3;margin-bottom:6px">${payload.title}</div>
-    ${payload.source ? `<div style="font-size:11px;color:var(--t-4);margin-bottom:16px">✓ ${mode === 'insight' ? 'Noticia real de' : 'Basado en'}: ${payload.source}${payload.url ? ` · <a href="${payload.url}" target="_blank" rel="noopener" style="color:var(--gold);text-decoration:none">leer original 🔗</a>` : ''}</div>` : '<div style="margin-bottom:12px"></div>'}
+    <div style="font-family:var(--display);font-size:19px;font-weight:600;color:var(--t-1);line-height:1.3;margin-bottom:6px">${escH(payload.title)}</div>
+    ${payload.source ? `<div style="font-size:11px;color:var(--t-4);margin-bottom:16px">✓ ${mode === 'insight' ? 'Noticia real de' : 'Basado en'}: ${payload.source}${payload.url ? ` · <a href="${safeUrl(payload.url)}" target="_blank" rel="noopener" style="color:var(--gold);text-decoration:none">leer original 🔗</a>` : ''}</div>` : '<div style="margin-bottom:12px"></div>'}
     
     <!-- Bloque 1: La noticia -->
     <div style="font-size:10.5px;color:var(--gold);text-transform:uppercase;letter-spacing:.6px;font-weight:700;margin-bottom:8px"><i class="ti ti-news" style="vertical-align:-2px;margin-right:5px"></i>La noticia</div>
@@ -10509,7 +10533,7 @@ function detectActionableIntent(msg, afterMsgId) {
   const card = document.createElement('div');
   card.style.cssText = 'margin:8px 0 8px 44px;padding:14px 16px;background:rgba(217,168,32,.06);border:1px solid rgba(217,168,32,.3);border-radius:12px;max-width:460px';
   card.innerHTML = `
-    <div style="font-size:13px;font-weight:600;color:var(--t-1);margin-bottom:4px">${action.title}</div>
+    <div style="font-size:13px;font-weight:600;color:var(--t-1);margin-bottom:4px">${escH(action.title)}</div>
     <div style="font-size:11.5px;color:var(--t-2);line-height:1.5;margin-bottom:10px">${action.desc}</div>
     <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
       <input type="number" id="action-amount-input" placeholder="Importe €" value="${action.amount || ''}" style="width:110px;padding:7px 10px;border:1px solid var(--line);border-radius:6px;font-family:var(--mono);font-size:12px;background:var(--surf);color:var(--t-1)">
@@ -11018,7 +11042,7 @@ function prepUpload() {
   $('up-ic').textContent='⤴'; $('up-t').textContent='Selecciona un archivo';
   pendingUp = null; upFile = null;
   const sel = $('up-block');
-  sel.innerHTML = '<option value="">— General —</option>'+blocks.filter(b=>!b.deleted).map(b=>`<option value="${b.id}">${BT[b.type].label} · ${b.name}</option>`).join('');
+  sel.innerHTML = '<option value="">— General —</option>'+blocks.filter(b=>!b.deleted).map(b=>`<option value="${b.id}">${BT[b.type].label} · ${escH(b.name)}</option>`).join('');
   if (uploadBlockId) sel.value = uploadBlockId;
 }
 
@@ -12621,7 +12645,7 @@ function promptMissingISINs(blockId, posList){
   const ov=document.createElement('div'); ov.className='overlay'; ov.style.cssText='display:flex;align-items:center;justify-content:center;z-index:9700';
   ov.onclick=e=>{ if(e.target===ov) ov.remove(); };
   const rows=posList.map((p,i)=>`<div style="display:flex;gap:8px;align-items:center;margin-bottom:9px">
-    <div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:600;color:var(--t-1)">${p.ticker}</div>${p.name?`<div style="font-size:11px;color:var(--t-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${p.name}</div>`:''}</div>
+    <div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:600;color:var(--t-1)">${escH(p.ticker)}</div>${p.name?`<div style="font-size:11px;color:var(--t-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escH(p.name)}</div>`:''}</div>
     <input class="fi" data-i="${i}" placeholder="ISIN (ej. IE00B4L5Y983)" style="flex:1.3;font-size:12px;font-family:var(--mono);text-transform:uppercase;padding:7px 9px">
   </div>`).join('');
   ov.innerHTML=`<div style="background:var(--surf);border:1px solid var(--line);border-radius:16px;max-width:460px;width:92%;max-height:88vh;overflow-y:auto;padding:22px">
@@ -12827,7 +12851,7 @@ function showNominaModal(key, lastNomina) {
           <label class="field-l">¿Añadir al cash? (cuenta bancaria)</label>
           <select class="fs" id="nomina-cash-block">
             <option value="">— No añadir —</option>
-            ${blocks.filter(b=>!b.deleted&&b.type==='cash').map(b=>`<option value="${b.id}">${b.name}</option>`).join('')}
+            ${blocks.filter(b=>!b.deleted&&b.type==='cash').map(b=>`<option value="${b.id}">${escH(b.name)}</option>`).join('')}
           </select>
         </div>
       </div>
@@ -12956,7 +12980,7 @@ Tono: profesional, tipo memo de comité de inversión. En español.`;
       html += '<div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:var(--t-4);margin-bottom:6px">📄 Documentos vinculados</div>';
       linkedDocs.forEach(d => {
         const url = d.url || '#';
-        html += `<div style="font-size:11px;margin-bottom:3px"><a href="${url}" target="_blank" style="color:var(--gold);text-decoration:none">${d.filename}</a></div>`;
+        html += `<div style="font-size:11px;margin-bottom:3px"><a href="${url}" target="_blank" style="color:var(--gold);text-decoration:none">${escH(d.filename)}</a></div>`;
       });
       html += '</div>';
     }
@@ -13024,7 +13048,7 @@ function renderObjectives() {
           return `<div style="padding:14px 18px;border-bottom:1px solid var(--line-2)">
             <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px">
               <div>
-                <div style="font-size:13px;font-weight:500;color:var(--t-1)">${g.name}</div>
+                <div style="font-size:13px;font-weight:500;color:var(--t-1)">${escH(g.name)}</div>
                 <div style="font-size:10.5px;color:var(--t-3);margin-top:2px">${g.type === 'ahorro' ? '💰 Ahorro' : g.type === 'inversion' ? '📈 Inversión' : '🎯 Meta'} ${g.deadline ? '· ' + new Date(g.deadline).toLocaleDateString('es-ES', {month:'short',year:'numeric'}) : ''}</div>
               </div>
               <div style="text-align:right">
@@ -13216,7 +13240,7 @@ function openAddRoboAdvisor(blockId) {
         </div>
         
         <div style="background:rgba(27,79,216,.05);border-left:3px solid var(--gold);padding:10px 12px;border-radius:0 6px 6px 0;font-size:11.5px;color:var(--t-2);line-height:1.6;margin-top:14px">
-          💡 El Robo Advisor se añade como una posición más del bloque <strong>${b.name}</strong>. Su P&L se calcula como <em>Valor actual − Invertido total</em>.
+          💡 El Robo Advisor se añade como una posición más del bloque <strong>${escH(b.name)}</strong>. Su P&L se calcula como <em>Valor actual − Invertido total</em>.
         </div>
       </div>
       <div class="mf">
@@ -13462,7 +13486,7 @@ function promptCashMovement(direction, amountEur, description, relatedBlockId = 
         onmouseover="this.style.borderColor='var(--gold)';this.style.background='var(--surf-2)'"
         onmouseout="this.style.borderColor='var(--line)';this.style.background='var(--surf)'">
         <div>
-          <div style="font-size:13.5px;font-weight:600;color:var(--t-1)">${acc.name}</div>
+          <div style="font-size:13.5px;font-weight:600;color:var(--t-1)">${escH(acc.name)}</div>
           <div style="font-size:11px;color:${insufficient ? 'var(--neg)' : 'var(--t-3)'};margin-top:2px">
             Saldo: ${fE(balance)}${insufficient ? ' ⚠ insuficiente' : ''} → ${fE(isOut ? balance - amountEur : balance + amountEur)}
           </div>
@@ -13553,7 +13577,7 @@ function openImportPositions(blockId) {
   overlay.innerHTML = `
     <div class="modal modal-lg" onclick="event.stopPropagation()">
       <div class="mh">
-        <div class="mh-t">Importar posiciones · ${b.name}</div>
+        <div class="mh-t">Importar posiciones · ${escH(b.name)}</div>
         <button class="mh-c" onclick="this.closest('.overlay').remove()">✕</button>
       </div>
       <div class="mb">
@@ -14204,7 +14228,7 @@ function openTradeModal(blockId) {
   overlay.innerHTML = `
     <div class="modal modal-lg" onclick="event.stopPropagation()">
       <div class="mh">
-        <div class="mh-t">Registrar operación · ${b.name}</div>
+        <div class="mh-t">Registrar operación · ${escH(b.name)}</div>
         <button class="mh-c" onclick="this.closest('.overlay').remove()">✕</button>
       </div>
       <div class="mb">
@@ -15221,7 +15245,7 @@ function renderGoalCard(g, idx) {
         <div style="display:grid;grid-template-columns:1fr;gap:16px">
           <!-- Título y meta -->
           <div>
-            <div style="font-family:var(--display);font-size:22px;font-weight:500;color:var(--t-1);letter-spacing:-.3px">${g.name}</div>
+            <div style="font-family:var(--display);font-size:22px;font-weight:500;color:var(--t-1);letter-spacing:-.3px">${escH(g.name)}</div>
             <div style="font-size:12px;color:var(--t-3);margin-top:4px">
               Meta: <strong style="color:var(--t-1);font-family:var(--mono)">${fE(g.targetAmount)}</strong> · 
               Plazo: <strong style="color:var(--t-1)">${formatYears(g.years)}</strong> · 
@@ -16035,7 +16059,7 @@ function renderCashOpps(opps, ts) {
             <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;margin-bottom:8px">
               <div style="flex:1;min-width:200px">
                 <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-                  <span style="font-family:var(--display);font-size:14.5px;font-weight:600;color:var(--t-1)">${o.name}</span>
+                  <span style="font-family:var(--display);font-size:14.5px;font-weight:600;color:var(--t-1)">${escH(o.name)}</span>
                   <span class="tag" style="background:${typeColor}1a;color:${typeColor};font-size:9.5px;font-weight:700;text-transform:uppercase">${typeLabel}</span>
                 </div>
                 ${o.what_is ? `<div style="font-size:12px;color:var(--t-2);line-height:1.5;margin-top:5px">${o.what_is}</div>` : ''}
@@ -16140,7 +16164,7 @@ function renderMacroPlays(plays) {
               </div>
             </div>
             <div style="margin-top:10px;display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap">
-              ${p.url ? `<a href="${p.url}" target="_blank" rel="noopener" class="btn btn-soft btn-xs" style="text-decoration:none">🔗 Original</a>` : ''}
+              ${p.url ? `<a href="${safeUrl(p.url)}" target="_blank" rel="noopener" class="btn btn-soft btn-xs" style="text-decoration:none">🔗 Original</a>` : ''}
               <button class="btn btn-soft btn-xs" onclick='openArticleReader(${JSON.stringify({title: p.event, summary: p.thesis, source: p.source || "Análisis macro", url: p.url, concept: "Contexto macro: " + p.event + ". " + (p.thesis||"") + " Explica qué significa este tipo de evento para un inversor principiante y qué activos (oro, petróleo, bonos, bolsa) suelen reaccionar y por qué."}).replace(/'/g, "&#39;")}, "tactical")'>🎓 ¿Qué significa para mí?</button>
             </div>
           </div>
@@ -16299,7 +16323,7 @@ function renderCoachingCards() {
             <div style="padding:12px 16px;border-bottom:1px solid var(--line-2);display:flex;gap:12px;align-items:flex-start">
               <div style="width:4px;align-self:stretch;background:${sc.c};border-radius:2px;flex-shrink:0"></div>
               <div style="flex:1">
-                <div style="font-size:12.5px;font-weight:600;color:var(--t-1);margin-bottom:3px">${p.title}</div>
+                <div style="font-size:12.5px;font-weight:600;color:var(--t-1);margin-bottom:3px">${escH(p.title)}</div>
                 <div style="font-size:11.5px;color:var(--t-2);line-height:1.5">${p.insight}</div>
                 <div style="display:flex;gap:6px;margin-top:8px">
                   <button class="btn btn-soft btn-xs" onclick="goCoachingTarget('${p.target}')">${p.action}</button>
@@ -16676,7 +16700,7 @@ function showDocAnalysis(docId) {
     overlay.innerHTML = `
       <div class="modal" onclick="event.stopPropagation()" style="max-width:520px">
         <div class="mh">
-          <div class="mh-t">📄 ${doc.filename}</div>
+          <div class="mh-t">📄 ${escH(doc.filename)}</div>
           <button class="mh-c" onclick="this.closest('.overlay').remove()">✕</button>
         </div>
         <div class="mb">
@@ -16867,7 +16891,7 @@ function showDocAnalysis(docId) {
       
       <!-- Footer -->
       <div style="padding:12px 20px;background:var(--surf-2);border-top:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
-        <div style="font-size:11px;color:var(--t-4)">📄 ${doc.filename}</div>
+        <div style="font-size:11px;color:var(--t-4)">📄 ${escH(doc.filename)}</div>
         <div style="display:flex;gap:6px">
           <button class="btn btn-soft btn-sm" onclick="analyzeDocumentById('${docId}');this.closest('.overlay').remove();setTimeout(()=>showDocAnalysis('${docId}'),200)">🔄 Re-analizar</button>
           ${doc.storage_path ? `<button class="btn btn-soft btn-sm" onclick="downloadDoc('${docId}')">⬇ Descargar</button>` : ''}
@@ -17271,7 +17295,7 @@ async function reanalyzeAllDocs() {
               return `
                 <div style="padding:8px 10px;background:var(--surf-2);border-radius:6px;display:flex;align-items:center;gap:8px;font-size:11.5px;border-left:3px solid ${colors[r.status]}">
                   <span>${icons[r.status]}</span>
-                  <span style="flex:1;color:var(--t-1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${r.doc.filename}</span>
+                  <span style="flex:1;color:var(--t-1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escH(r.doc.filename)}</span>
                   ${extra}
                 </div>
               `;
@@ -17469,7 +17493,7 @@ function editTimelineEvent(eventId) {
             <label>Vincular a bloque</label>
             <select id="tl-edit-block" class="inp">
               <option value="">— Sin vincular —</option>
-              ${blocks.filter(b => !b.deleted).map(b => `<option value="${b.id}" ${ev.blockId == b.id ? 'selected' : ''}>${b.name}</option>`).join('')}
+              ${blocks.filter(b => !b.deleted).map(b => `<option value="${b.id}" ${ev.blockId == b.id ? 'selected' : ''}>${escH(b.name)}</option>`).join('')}
             </select>
           </div>
         </div>
@@ -17646,7 +17670,7 @@ async function handleBulkFiles(fileList) {
           return `
             <div style="padding:8px 12px;background:var(--surf-2);border-radius:6px;display:flex;align-items:center;gap:10px;font-size:12px;border-left:3px solid ${statusColors[r.status]}">
               <span style="font-size:14px">${statusIcons[r.status]}</span>
-              <span style="flex:1;color:var(--t-1);font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${r.name}</span>
+              <span style="flex:1;color:var(--t-1);font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escH(r.name)}</span>
               <span style="color:${statusColors[r.status]};font-size:11px">${statusLabels[r.status]}${extra}</span>
               ${r.docId && r.status === 'done' ? `<button class="btn btn-soft btn-xs" onclick="showDocAnalysis('${r.docId}');document.getElementById('bulk-upload-modal').remove()">Ver</button>` : ''}
             </div>
