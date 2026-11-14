@@ -5144,15 +5144,17 @@ async function handleExpensePhoto(file){
         {type:'image',source:{type:'base64',media_type:mediaType,data:base64}},
         {type:'text',text:`Esta es una captura de los movimientos/gastos de una cuenta bancaria española (BBVA, CaixaBank, Santander, Revolut, etc.).
 
-Extrae TODOS los movimientos de GASTO que veas (importes negativos / cargos). Ignora los ingresos salvo que sean claramente nómina.
+Extrae TODOS los movimientos que veas, tanto cargos (gastos) como abonos (ingresos, nóminas, devoluciones).
 Para cada movimiento incluye:
-- date (formato YYYY-MM-DD; si solo ves día y mes, usa el año actual ${new Date().getFullYear()})
-- concept (descripción corta del movimiento)
+- date (formato YYYY-MM-DD; si solo ves día y mes, deja el año en ${new Date().getFullYear()})
+- concept (descripción corta del movimiento, tal como aparece)
 - amount (importe en euros, número positivo)
-- category (clasifícalo en una de estas: ${cats})
+- type ("gasto" si es un cargo / importe negativo, "ingreso" si es un abono / importe positivo)
+- category (solo para gastos; clasifícalo en una de estas: ${cats})
 
+No inventes movimientos ni importes: si una línea no se lee bien, omítela.
 Responde SOLO con JSON válido sin markdown:
-{"movimientos":[{"date":"2026-06-03","concept":"Mercadona","amount":42.30,"category":"Alimentació"}]}
+{"movimientos":[{"date":"2026-06-03","concept":"Mercadona","amount":42.30,"type":"gasto","category":"Alimentació"}]}
 Si no encuentras movimientos, responde {"movimientos":[]}`}
       ]}]
     })});
@@ -5163,10 +5165,10 @@ Si no encuentras movimientos, responde {"movimientos":[]}`}
     const parsed = JSON.parse(m[0]);
     const movs = (parsed.movimientos||[]).filter(x=>x.amount>0);
     ov.remove();
-    if(!movs.length){ toast('No detecté gastos en la imagen — prueba con otra captura','err'); return; }
+    if(!movs.length){ toast('No detecté movimientos en la imagen — prueba con otra captura','err'); return; }
     // Inyectar en el modelo de gastos del mes correspondiente
-    const added = await mergeExpenseMovements(movs, target);
-    toastUndo(`✓ ${added} gastos añadidos a ${target.name}`);
+    const res = await mergeExpenseMovements(movs, target);
+    toastUndo(`✓ ${res.added} movimiento(s) añadidos a ${target.name}${res.skipped ? ` · ${res.skipped} ya estaban (no duplicados)` : ''}`);
     renderFlujos();
   }catch(e){
     ov.remove();
@@ -5314,38 +5316,45 @@ async function confirmPlazos(){
 }
 window.confirmPlazos = confirmPlazos;
 
+// Movimientos leídos de una captura del banco → gastos de la app.
+// · Ingresos (nómina, abonos, devoluciones) se guardan como ingresos, no como gasto.
+// · Mes Y año reales; una fecha "futura" (captura de diciembre leída en enero) es del año anterior.
+// · Cada fila lleva id y created_at (para sincronizar con Instinct y otros dispositivos).
+// · Sin duplicados: misma fecha + importe + tipo + concepto que una fila existente no se añade.
 async function mergeExpenseMovements(movs, account){
-  pushUndo('expense', 'gastos de captura');
-  const SP = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
-  const CA = ['Gener','Febrer','Març','Abril','Maig','Juny','Juliol','Agost','Septembre','Octubre','Novembre','Desembre'];
-  const existing = Object.keys(expenseData);
-  const usesCatalan = existing.some(k => CA.includes(k)) && !existing.some(k => SP.includes(k) && !CA.includes(k));
-  const MN = usesCatalan ? CA : SP;
-  let count=0;
-  for(const mv of movs){
-    const dt = (mv.date && /^\d{4}-\d{2}-\d{2}$/.test(mv.date)) ? mv.date : new Date().toISOString().slice(0,10);
-    const monIdx = parseInt(dt.slice(5,7),10)-1;
-    const key = MN[monIdx] || dt.slice(0,7);
-    if(!expenseData[key]) expenseData[key] = { name:key, num:monIdx+1, nomina:0, extra:0, totalIncome:0, totalExpense:0, savings:0, target:0, items:[], account:account.name };
-    const cat = _quickCat(mv.category);
-    expenseData[key].items.push({
-      concept:String(mv.concept||'Gasto').slice(0,80),
-      amount:Math.abs(+mv.amount||0),
-      isIncome:false,
-      category:cat.label, icon:cat.icon, color:cat.color,
-      date:dt, account:account.name
-    });
-    count++;
+  pushUndo('expense', 'movimientos de captura');
+  if (!expenseData || typeof expenseData !== 'object') expenseData = {};
+  const nrm = (x) => String(x||'').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/\s+/g,' ').trim();
+  const rowKey = (it) => `${it.date||''}|${Math.round((+it.amount||0)*100)}|${it.isIncome?1:0}|${nrm(it.concept)}`;
+  const seen = new Set();
+  Object.values(expenseData).forEach(m => (m?.items||[]).forEach(i => seen.add(rowKey(i))));
+  const today = localISODate();
+  let added = 0, skipped = 0;
+  const touched = new Set();
+  for (const mv of (movs||[])) {
+    const amt = Math.abs(+mv.amount || 0);
+    if (!amt) continue;
+    let dt = (mv.date && /^\d{4}-\d{2}-\d{2}$/.test(mv.date)) ? mv.date : today;
+    if (dt > today) dt = `${+dt.slice(0,4) - 1}${dt.slice(4)}`;          // sin año en la captura → año anterior
+    const isIncome = /^(ingreso|income|abono)$/i.test(String(mv.type||'').trim());
+    const concept = cleanText(String(mv.concept || (isIncome ? 'Ingreso' : 'Gasto'))).slice(0,80);
+    const cat = isIncome ? { label: /n[oó]mina|sueldo|salario|payroll/i.test(concept) ? 'Nómina' : 'Ingressos', icon: '💶', color: '#16a34a' } : _quickCat(mv.category);
+    const item = { id: crypto.randomUUID(), concept, amount: amt, isIncome, category: cat.label, icon: cat.icon, color: cat.color,
+                   date: dt, account: account?.name || null, source: 'captura', created_at: new Date().toISOString() };
+    const k = rowKey(item);
+    if (seen.has(k)) { skipped++; continue; }
+    seen.add(k);
+    const y = +dt.slice(0,4), mi = +dt.slice(5,7) - 1;
+    const key = expMonthKeyFor(expenseData, y, mi) || expNewMonth(expenseData, y, mi);
+    if (!Array.isArray(expenseData[key].items)) expenseData[key].items = [];
+    expenseData[key].items.push(item); touched.add(key); added++;
   }
-  // recalcular totales de cada mes tocado
-  Object.values(expenseData).forEach(mo=>{
-    if(!mo.items) return;
-    mo.totalExpense = mo.items.filter(i=>!i.isIncome).reduce((s,i)=>s+(i.amount||0),0);
-    mo.totalIncome  = mo.items.filter(i=>i.isIncome).reduce((s,i)=>s+(i.amount||0),0) + (mo.nomina||0) + (mo.extra||0);
-    mo.savings = mo.totalIncome - mo.totalExpense;
-  });
-  try{ await saveExpenseData?.(); }catch(e){ _silenced('mergeExpenseMovements', e); }
-  return count;
+  touched.forEach(k => _recalcMonth(expenseData[k]));
+  if (added) {
+    const ok = await saveExpenseData();
+    if (!ok) console.warn('[captura] guardado solo en este dispositivo');
+  }
+  return { added, skipped };
 }
 
 // ═══ Descargar el Excel de gastos reconstruido desde los datos guardados ═══
@@ -5437,28 +5446,27 @@ async function handleExpenseUpload(file) {
         const mo = newData[mk];
         const hasNom = (mo.nomina||0) > 0 || (mo.items||[]).some(it => it.isIncome && /n[oó]mina|sueldo|salario|payroll/i.test(it.concept||''));
         if (!hasNom) return;
-        const mIdx = (mo.num != null) ? mo.num-1 : MN.findIndex(n => n.toLowerCase() === String(mk).toLowerCase());
+        const mIdx = expMonthNum(mo) - 1;
         if (mIdx < 0) return;
-        const y = new Date().getFullYear();
-        // ¿hay un documento de nómina registrado para ese mes?
-        const regDoc = docs.find(d => d.doc_type==='nomina' && (()=>{const dd=new Date(d.created_at||d.date);return dd.getMonth()===mIdx;})());
-        if (regDoc) conflicts.push(MN[mIdx]);
+        const y = expMonthYear(mo) || new Date().getFullYear();
+        // ¿hay un documento de nómina registrado para ese mes Y año?
+        const regDoc = docs.find(d => d.doc_type==='nomina' && (()=>{const dd=new Date(d.created_at||d.date);return dd.getMonth()===mIdx && dd.getFullYear()===y;})());
+        if (regDoc) conflicts.push({ key: mk, label: `${EXP_SP[mIdx]} ${y}` });
       });
       if (conflicts.length) {
         const ok = await confirmModal(
           '⚠ Posible nómina duplicada',
-          `Tu Excel ya incluye la nómina de <b>${conflicts.join(', ')}</b>, y también la registraste manualmente este mes. Si la cargas, podría contarse dos veces.<br><br>¿Cómo quieres continuar?`,
-          'Cargar Excel y quitar la nómina manual',
+          `Tu Excel incluye la nómina de <b>${conflicts.map(c => escH(c.label)).join(', ')}</b> y ya tienes un documento de nómina de ese mes. Si la cargas, podría contarse dos veces.<br><br>Tus documentos no se tocan en ningún caso.`,
+          'Cargar el Excel sin su nómina de esos meses',
           'Cargar Excel tal cual'
         );
         if (ok) {
-          // eliminar los documentos de nómina de esos meses para no duplicar
-          conflicts.forEach(cm => {
-            const mIdx = MN.indexOf(cm);
-            const dup = docs.filter(d => d.doc_type==='nomina' && new Date(d.created_at||d.date).getMonth()===mIdx);
-            dup.forEach(d => { try{ deleteDoc(d.id); }catch(e){ _silenced('handleExpenseUpload', e); } });
+          // Se omite la nómina del EXCEL en esos meses (antes se borraban los documentos de nómina subidos)
+          conflicts.forEach(c => {
+            const mo = newData[c.key]; if (!mo) return;
+            mo.nomina = 0;
+            mo.items = (mo.items || []).filter(it => !(it.isIncome && /n[oó]mina|sueldo|salario|payroll/i.test(it.concept||'')));
           });
-          docs = docs.filter(d => !(d.doc_type==='nomina' && conflicts.includes(MN[new Date(d.created_at||d.date).getMonth()])));
         }
       }
     } catch(e){ console.warn('[nomina dup check]', e); }

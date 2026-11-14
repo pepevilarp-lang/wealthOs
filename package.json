@@ -9,7 +9,7 @@
   },
   "scripts": {
     "build": "echo 'Static site - no build needed'",
-    "test": "node tests/check-syntax.mjs && node tests/test-market.mjs && node tests/test-quick-expense.mjs && node tests/test-client-gastos.mjs && node tests/test-client-fx.mjs && node tests/test-tir.mjs && node tests/test-instinct.mjs"
+    "test": "node tests/check-syntax.mjs && node tests/test-market.mjs && node tests/test-quick-expense.mjs && node tests/test-client-gastos.mjs && node tests/test-client-fx.mjs && node tests/test-client-captura.mjs && node tests/test-tir.mjs && node tests/test-instinct.mjs"
   },
   "dependencies": {
     "web-push": "^3.6.7"
