@@ -1008,7 +1008,7 @@ img{transition:opacity .25s}
           <option value="otros">Otros activos</option>
         </select>
       </div>
-      <div class="field"><label class="field-l">Nombre</label><input class="fi" id="b-name" placeholder="Openbank, Inveready Full Global II, etc."></div>
+      <div class="field"><label class="field-l">Nombre</label><input class="fi" id="b-name" placeholder="Mi banco, mi fondo de capital riesgo, etc."></div>
       <div class="fg2">
         <div class="field"><label class="field-l">Valor actual (€)</label><input class="fi" type="number" id="b-value" step="0.01" placeholder="0"></div>
         <div class="field"><label class="field-l">Moneda</label>
@@ -1914,22 +1914,22 @@ async function loadAll() {
   try{ socialBoot(); }catch(e){ _silenced('safeLoad', e); }
 }
 
+// Modo demostración: datos FICTICIOS y redondos (el repositorio es público; nada que se parezca a datos reales).
 function loadDemo() {
+  const now = new Date().toISOString();
   blocks = [
-    {id:'d1',type:'cash',name:'Openbank',value:3094,eur_value:3094,currency:'EUR',notes:'Cuenta corriente principal',extra:{},updated_at:new Date().toISOString()},
-    {id:'d2',type:'cash',name:'Revolut',value:4306,eur_value:4306,currency:'EUR',notes:'APY 3.0% vault',extra:{},updated_at:new Date().toISOString()},
-    {id:'d3',type:'bolsa',name:'IBKR',value:2186,eur_value:2186,currency:'EUR',notes:'DHR, MSFT, NVDA, 5J50',extra:{broker:'Interactive Brokers'},updated_at:new Date().toISOString()},
-    {id:'d4',type:'fondos',name:'Indexa Capital',value:2369,eur_value:2369,currency:'EUR',notes:'Cartera 10/10 — RV global',extra:{gestora:'Indexa Capital',fee:0.40},updated_at:new Date().toISOString()},
-    {id:'d5',type:'pe',name:'Inveready Full Global II',value:750,eur_value:750,currency:'EUR',notes:'SCR de venture capital',extra:{committed:5000,called:750,distributed:0,tvpi:1.10,dpi:0,rvpi:1.10,irr:null,gp:'Inveready Asset Management',vintage:'2024',estrategia:'VC growth-stage'},updated_at:new Date().toISOString()},
+    {id:'d1',type:'cash',name:'Banco Ejemplo',value:3000,eur_value:3000,currency:'EUR',notes:'Cuenta de ejemplo (demo)',extra:{},updated_at:now},
+    {id:'d2',type:'cash',name:'Cuenta Remunerada Ejemplo',value:4000,eur_value:4000,currency:'EUR',notes:'Demo',extra:{},updated_at:now},
+    {id:'d3',type:'bolsa',name:'Broker Ejemplo',value:2000,eur_value:2000,currency:'EUR',notes:'Demo',extra:{broker:'Broker Ejemplo'},updated_at:now},
+    {id:'d4',type:'fondos',name:'Fondo Indexado Ejemplo',value:2500,eur_value:2500,currency:'EUR',notes:'Demo',extra:{gestora:'Gestora Ejemplo',fee:0.40},updated_at:now},
+    {id:'d5',type:'pe',name:'Fondo Capital Riesgo Ejemplo',value:1000,eur_value:1000,currency:'EUR',notes:'Demo',extra:{committed:5000,called:1000,distributed:0,gp:'Gestora Ejemplo'},updated_at:now},
   ];
   history = [
-    {date:'2025-09-01',total:11200},{date:'2025-10-01',total:11800},
-    {date:'2025-11-01',total:12400},{date:'2025-12-01',total:13100},
-    {date:'2026-01-01',total:9235},{date:'2026-02-01',total:10988},
-    {date:'2026-03-01',total:11679},{date:'2026-04-01',total:13357},
+    {date:'2026-01-01',total:10000},{date:'2026-02-01',total:10500},
+    {date:'2026-03-01',total:11000},{date:'2026-04-01',total:12500},
   ];
   txs = [
-    {id:'t1',block_id:'d5',kind:'call',amount:750,date:'2024-06-15',note:'Capital call inicial #1'},
+    {id:'t1',block_id:'d5',kind:'call',amount:1000,date:'2026-01-15',note:'Capital call de ejemplo'},
   ];
 }
 
@@ -4022,7 +4022,7 @@ function updBlockExtra() {
         <div class="field"><label class="field-l">IRR (%)</label><input class="fi" type="number" id="ex-irr" step="0.1" placeholder="—" value="${ex.irr||''}"></div>
       </div>
       <div class="fg2">
-        <div class="field"><label class="field-l">GP / Gestora</label><input class="fi" id="ex-gp" placeholder="Inveready, Ysios..." value="${ex.gp||''}"></div>
+        <div class="field"><label class="field-l">GP / Gestora</label><input class="fi" id="ex-gp" placeholder="Nombre de la gestora" value="${ex.gp||''}"></div>
         <div class="field"><label class="field-l">Vintage</label><input class="fi" id="ex-vintage" placeholder="2024" value="${ex.vintage||''}"></div>
       </div>
       <div class="fg2">
@@ -10472,7 +10472,7 @@ No expliques esta línea; el sistema mostrará un botón para añadir el gasto r
 Directivas disponibles (una por línea, al final del mensaje, formato EXACTO):
 
 ACTUALIZAR_SALDO :: cuenta=<nombre de la cuenta tal como aparece en sus datos> :: valor=<nuevo saldo en €>
-(para corregir el saldo de una cuenta cash o el valor de un activo. Ejemplo: ACTUALIZAR_SALDO :: cuenta=Openbank :: valor=1148.72)
+(para corregir el saldo de una cuenta cash o el valor de un activo. Ejemplo: ACTUALIZAR_SALDO :: cuenta=Mi banco :: valor=1500)
 
 REGISTRAR_OPERACION :: tipo=<venta|compra> :: activo=<ticker o nombre> :: importe=<€> :: cuenta=<cuenta cash afectada>
 (cuando el cliente dice "he vendido X" o "he comprado Y". Ejemplo: REGISTRAR_OPERACION :: tipo=venta :: activo=Microsoft :: importe=1200 :: cuenta=Revolut)
@@ -10513,7 +10513,9 @@ Responde en español. Máximo 350 palabras. Sin emojis salvo que sean muy necesa
     if (!r.ok) {
       const data = await r.json().catch(()=>({}));
       console.warn('[Chat] API error:', data);
-      throw new Error('api');
+      const err = new Error(data?.error?.message || `Error ${r.status} del servidor de IA`);
+      err.status = r.status; err.type = data?.error?.type || '';
+      throw err;
     }
     const d = await r.json();
     let reply = extractAIText(d);
@@ -10611,7 +10613,14 @@ Responde en español. Máximo 350 palabras. Sin emojis salvo que sean muy necesa
   } catch(e) {
     console.warn('[Chat] failed:', e);
     // Fallback honesto: explicar que la IA no está disponible
-    updMsg(tid, `No he podido responder ahora mismo. Esto suele pasar cuando la conexión con Groq está fallando.\n\n**Posibles causas:**\n• Falta la variable GROQ_API_KEY en Vercel\n• Necesitas hacer Redeploy después de configurar la variable\n• Problema temporal de red o rate limit\n\nPrueba de nuevo en unos segundos.`);
+    // Se muestra el motivo REAL (antes siempre culpaba a GROQ_API_KEY)
+    const why = e?.type === 'no_session' || e?.status === 401 ? 'Tu sesión ha caducado: vuelve a iniciar sesión.'
+      : e?.type === 'missing_api_key' ? 'Falta la variable GROQ_API_KEY en Vercel (y hacer Redeploy).'
+      : e?.status === 429 ? 'Has llegado al límite de peticiones de la IA. Espera un minuto.'
+      : e?.message === 'empty' ? 'La IA respondió vacío.'
+      : (e?.message && e.message !== 'api') ? e.message
+      : 'No hay conexión con el servidor de IA.';
+    updMsg(tid, `No he podido responder ahora mismo.\n\n**Motivo:** ${escH(why)}\n\nPrueba de nuevo en unos segundos.`);
   }
 }
 
@@ -16612,7 +16621,7 @@ Devuelve EXACTAMENTE este JSON sin markdown, sin texto extra, sin backticks:
 {
   "doc_class": "capital_call | distribution | quarterly_report | brokerage | tax | kiid | nav_update | contract | other",
   "confidence": 0-100,
-  "headline": "Una frase clara que resuma lo más importante (max 100 chars). Ej: 'Inveready FG II te pide 5.000€ antes del 15 de junio'",
+  "headline": "Una frase clara que resuma lo más importante (max 100 chars). Ej: 'El fondo X te pide 5.000€ antes del 15 de junio'",
   "urgency": "high | medium | low | info",
   "entity_name": "Nombre del emisor/fondo/empresa que envía el doc",
   "fund_name": "Nombre del fondo o vehículo concreto si aplica",
