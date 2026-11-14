@@ -11490,7 +11490,7 @@ Formato de números: sin €/x/% y con punto decimal. TVPI 1,16x → 1.16 · IRR
   };
 
   const prompt = `${prompts[docType]||prompts.otro}
-${block?`\nCONTEXTO: activo "${block.name}" (${BT[block.type].label}, valor actual ${fE(block.eur_value||block.value||0)}).`:''}
+${block?`\nCONTEXTO: activo "${block.name}" (${BT[block.type].label}). Extrae las cifras ÚNICAMENTE del documento.`:''}
 
 Responde SOLO con JSON válido sin markdown:
 {"tipo":"${docType}","resumen":"2-3 frases con hallazgos clave","campos":{},"actualizar_bloque":{"valor":null,"extra":{},"notas":null},"alertas":[]}
@@ -16548,20 +16548,16 @@ async function deepAnalyzeDocument(extractedText, filename, blockHint = null) {
     ? extractedText.slice(0, MAX_CHARS) + '\n\n[...documento truncado por longitud...]'
     : extractedText;
   
-  // Contexto del bloque si está vinculado (para detectar inconsistencias)
+  // Extracción A CIEGAS: el modelo solo sabe qué activo es (para identificarlo), nunca nuestras cifras
+  // (valor, comprometido, desembolsado). Si las viera, tendería a "encontrarlas" en el documento.
+  // La comparación con el registro propio se hace después, en código (docBlockChecks).
   let blockContext = '';
-  if (blockHint) {
-    const b = blocks.find(x => x.id == blockHint);
-    if (b) {
-      blockContext = `\n\nCONTEXTO DEL BLOQUE VINCULADO:
-- Nombre: ${b.name}
-- Tipo: ${b.type}
-- Valor actual: ${fE(b.eur_value || b.value || 0)}`;
-      if (b.extra?.committed) blockContext += `\n- Comprometido: ${fE(b.extra.committed)}`;
-      if (b.extra?.called) blockContext += `\n- Llamado a la fecha: ${fE(b.extra.called)}`;
-      if (b.extra?.committed && b.extra?.called) blockContext += `\n- Pendiente: ${fE(b.extra.committed - b.extra.called)}`;
-      if (b.extra?.gp) blockContext += `\n- GP/Gestora: ${b.extra.gp}`;
-    }
+  const linkedBlock = blockHint ? blocks.find(x => x.id == blockHint) : null;
+  if (linkedBlock) {
+    blockContext = `\n\nACTIVO AL QUE SE ASOCIA (solo para identificarlo; extrae las cifras ÚNICAMENTE del documento):
+- Nombre: ${linkedBlock.name}
+- Tipo: ${linkedBlock.type}`;
+    if (linkedBlock.extra?.gp) blockContext += `\n- GP/Gestora: ${linkedBlock.extra.gp}`;
   }
   
   const prompt = `Eres un analista financiero senior especializado en private equity, venture capital, fondos de inversión y brokerage. Tu trabajo es analizar un documento financiero y producir una explicación CLARÍSIMA y ACCIONABLE en español para un inversor particular.
@@ -16703,7 +16699,53 @@ Si NO puedes determinar algún campo con certeza, pon null. Es MEJOR null que in
   // ─── Validación anti-contaminación FONDO ↔ PARTICIPADAS ───
   try { validateFundExtraction(analysis); } catch (e) { console.warn('[validateFundExtraction]', e); }
 
+  // ─── Comparación con el registro propio, en código ───
+  if (linkedBlock) {
+    analysis.inconsistencies = Array.isArray(analysis.inconsistencies) ? analysis.inconsistencies : [];
+    docBlockChecks(analysis, linkedBlock).forEach(w => analysis.inconsistencies.push(w));
+  }
+
   return analysis;
+}
+
+// Compara lo extraído de un documento con lo que Orbit tiene registrado del activo.
+// No modifica nada: devuelve avisos para que el usuario decida.
+function docBlockChecks(a, b) {
+  const out = [];
+  if (!a || !b) return out;
+  const n = v => {
+    if (typeof v === 'number') return isFinite(v) ? v : null;
+    if (typeof v !== 'string' || !v.trim()) return null;
+    const t = v.replace(/[^\d.,-]/g, '');
+    const x = parseFloat(t.includes(',') ? t.replace(/\./g, '').replace(',', '.') : t);   // "5.000,50" | "5000.50"
+    return isFinite(x) ? x : null;
+  };
+  const ex = b.extra || {};
+  const committed = n(ex.committed), called = n(ex.called);
+  const main = a.amounts?.main, amt = main ? n(main.value) : null;
+  const ccy = String(main?.currency || 'EUR').toUpperCase();
+  const blockCcy = String(b.currency || 'EUR').toUpperCase();
+  const f = v => {   // 6.000 · 1.500,50 (punto de miles también con 4 cifras)
+    const [i, d] = (Math.round(Math.abs(v) * 100) / 100).toFixed(2).split('.');
+    return (v < 0 ? '−' : '') + i.replace(/\B(?=(\d{3})+(?!\d))/g, '.') + (d !== '00' ? ',' + d : '') + ' ' + blockCcy;
+  };
+  if (amt != null && ccy !== blockCcy) {
+    out.push({ message: `El importe del documento está en ${ccy} y el activo en ${blockCcy}: revisa la conversión antes de aplicarlo.`, severity: 'medium' });
+    return out;
+  }
+  if (a.doc_class === 'capital_call' && amt != null && committed != null && called != null) {
+    const pending = committed - called;
+    if (amt > pending + 0.005) out.push({ message: `La llamada (${f(amt)}) supera lo pendiente según tu registro (${f(pending)} = ${f(committed)} comprometido − ${f(called)} desembolsado).`, severity: 'high' });
+  }
+  if (a.doc_class === 'distribution' && amt != null && called != null && amt > called * 3) {
+    out.push({ message: `La distribución (${f(amt)}) es más de 3 veces lo desembolsado según tu registro (${f(called)}): comprueba que el importe es tuyo y no del fondo entero.`, severity: 'medium' });
+  }
+  const fm = a.fund_metrics || {};
+  const fc = n(fm.commitment);
+  if (committed != null && fc != null && fc < committed - 0.005) {
+    out.push({ message: `El documento indica un compromiso total del fondo de ${f(fc)}, menor que tu propio compromiso registrado (${f(committed)}): probablemente la cifra no es del fondo.`, severity: 'medium' });
+  }
+  return out;
 }
 
 // Reduce el riesgo de que métricas de participadas contaminen las del fondo.
