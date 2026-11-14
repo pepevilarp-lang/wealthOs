@@ -29,7 +29,7 @@ function match(r, f) {
     return true;
   });
 }
-const json = (status, body) => new Response(body === undefined ? '' : JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+const json = (status, body) => new Response((status === 204 || status === 304 || body === undefined) ? null : JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 
 export const failNext = { table: null, method: null };
 
