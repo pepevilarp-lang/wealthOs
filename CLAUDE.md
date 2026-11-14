@@ -49,7 +49,7 @@ Modelos de IA (resuelto 3 oct 2026):
 - La respuesta incluye también `content[0].text`: cuatro puntos de la app leían ese formato y
   recibían texto vacío sin avisar.
 - Revisar https://console.groq.com/docs/deprecations periódicamente.
-- Pendiente: el mensaje de error de `sendChat` culpa siempre a `GROQ_API_KEY`; debe mostrar el error real.
+- Resuelto (14 nov 2026): `sendChat` muestra el motivo real que devuelve `/api/groq`.
 
 Resuelto (11 nov 2026, rama auditoria-nov-2026):
 - Claves de Twelve Data, Finnhub y FMP fuera de `index.html`: todo pasa por `/api/market` (proxy con lista
@@ -169,7 +169,7 @@ Pendiente:
 - Decidir si se borra el proyecto duplicado `wealth-os-ah1o` en Vercel.
 - Tabla `movements` como libro único de gastos (sigue siendo el objetivo); hoy los gastos siguen en un JSON por
   usuario, ya con año, versión y borrados.
-- Extracción de documentos de PE a ciegas; Content-Security-Policy (requiere quitar los onclick en línea).
+- Content-Security-Policy (requiere quitar los onclick en línea).
 
 ## Pruebas
 `npm test`: sintaxis de /api y de las páginas + 7 baterías (API de Instinct, /api/market, Siri, gastos y
@@ -306,3 +306,12 @@ Local: `node dev-server.mjs` (ver LOCAL.md).
   guarda con la misma clave; conserva 7 días. Requiere `FINNHUB_KEY` en Vercel. Verificado contra las funciones reales
   de la app: mismas 3 noticias y mismo orden.
 - 21 oct 2026: verificado en producción que `/api/instinct/<ruta>` da 404 (la reescritura de vercel.json no se aplica) y que `/api/instinct?route=<ruta>` funciona. Usar siempre `?route=`.
+
+## Auditoría 14 nov 2026 (rama auditoria-nov-2026)
+- Captura del banco (`mergeExpenseMovements`): la IA extrae cargos y abonos con `type`; nóminas, abonos y devoluciones
+  son ingresos. Mes y año reales, `id`/`created_at`, sin duplicados (misma clave que la importación de Excel).
+- Aviso de nómina duplicada al importar Excel: compara mes Y año y ya no borra documentos; omite la nómina del Excel.
+- Extracción de documentos de PE a ciegas: el modelo solo recibe nombre, tipo y gestora. `docBlockChecks` compara
+  en código con el registro (llamada > pendiente, distribución desproporcionada, divisa, compromiso del fondo).
+- `loadDemo` con datos ficticios y redondos; ejemplos sin nombres ni importes que parezcan reales.
+- Simulador de Supabase: 204 sin cuerpo (antes el camino de deshacer el historial no se probaba).
