@@ -108,8 +108,13 @@ previsiones…). Cada aviso lleva fecha y fuente. `?refresh=1` consulta Finnhub 
 La tarea diaria `/api/radar` (06:30 UTC) los prepara; **`GET /alerts` ya los incluye y no los repite**, así que basta
 con consultar `/alerts` para recibirlos por WhatsApp.
 
+### `GET /notes` — análisis de Claude
+Análisis guardados en Orbit (tabla `orbit_notes`): revisiones de cartera, radar, tesis e ideas de operación de 1 semana a
+3 meses, con resumen listo para WhatsApp y enlace al análisis completo. Incluye las ideas aún abiertas con entrada,
+objetivo, salida y caducidad. `GET /alerts` ya entrega los de los últimos 7 días sin repetirlos.
+
 ### Lectura
-`GET /assets` · `GET /positions` · `GET /summary` · `GET /alerts` · `GET /radar`
+`GET /assets` · `GET /positions` · `GET /summary` · `GET /alerts` · `GET /radar` · `GET /notes`
 
 ## Si el entorno solo permite GET
 Cada escritura admite la misma ruta por GET con `_method`, el token en la cabecera y los datos en la URL:

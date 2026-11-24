@@ -332,3 +332,15 @@ Local: `node dev-server.mjs` (ver LOCAL.md).
 - Pruebas: `tests/test-radar.mjs` (20 casos, datos ficticios).
 - Pendiente (decidido, no hecho): cartera de trading separada con tope del 5 % de la bolsa, reglas de entrada/salida y
   diario de operaciones; avisos de precios, resultados y private equity.
+
+## Análisis de Claude en Orbit (24 nov 2026)
+- Petición del usuario: que los análisis de Claude (chat y tarea semanal) lleguen a Orbit y a WhatsApp, incluidas 3 ideas
+  de operación de 1 semana a 3 meses con seguimiento de resultados.
+- Tabla `orbit_notes` (`sql/005_orbit_notes.sql`, aplicada; el usuario solo lee los suyos; escribe Claude con la clave de
+  servicio): kind cartera/radar/tesis/idea/resultados/analisis, resumen ≤ 700 caracteres, enlace, fuentes y, en ideas,
+  dirección, entrada, objetivo, salida, caducidad, estado y resultado.
+- `api/instinct.js`: `computeAlerts` añade los análisis de 7 días (clave `note:<id>`, sin repetir); ruta `GET notes`.
+  App: sección "Análisis de Claude" en Hoy (`loadOrbitNotes`). Pruebas: `tests/test-notes.mjs` (5 casos).
+- Tarea programada en la cuenta del usuario (no en el repo): lunes 07:41 Madrid, revisión de cartera, radar de cada acción
+  suelta, 3 ideas y revisión de las ideas anteriores (objetivo / stop / caducada, % de acierto). Escribe en `orbit_notes` y
+  un documento de Claude Docs por semana.
