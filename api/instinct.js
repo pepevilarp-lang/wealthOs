@@ -17,6 +17,7 @@
 import crypto from 'crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { stockTickers, scanTickers, persistEvents, addDays } from './_lib/radar.js';
+import { scoreboard } from './_lib/ideas.js';
 
 const SB_URL = process.env.SUPABASE_URL;
 const SERVICE = process.env.SUPABASE_SERVICE_ROLE;
@@ -591,6 +592,9 @@ export async function computeAlerts(uid, today) {
     const notes = await sb(`orbit_notes?select=id,kind,ticker,title,summary,doc_url,created_at&user_id=eq.${uid}&created_at=gte.${addDays(today, -7)}&order=created_at.desc&limit=10`) || [];
     for (const n of notes) out.push({ key: `note:${n.id}`, level: n.kind === 'idea' ? 'media' : 'baja', kind: n.kind, ticker: n.ticker,
       text: noteText(n) });
+    // Propuestas cerradas en los últimos 7 días (objetivo, salida o caducada): un aviso por cambio de estado
+    const done = await sb(`orbit_notes?select=id,ticker,title,status,result_pct,result_eur,size_eur,executed,closed_on&user_id=eq.${uid}&kind=eq.idea&status=neq.abierta&closed_on=gte.${addDays(today, -7)}&limit=10`) || [];
+    for (const n of done) out.push({ key: `note:${n.id}:${n.status}`, level: 'media', kind: 'idea', ticker: n.ticker, text: ideaClosedText(n) });
   } catch (e) {
     console.error('[instinct] análisis no disponibles:', e);
     out.push({ key: `note:error:${today}`, level: 'baja', text: `⚠️ No he podido leer los análisis guardados (${String(e.message || e).slice(0, 80)}).` });
@@ -602,15 +606,27 @@ const NOTE_ICON = { idea: '💡', cartera: '📊', radar: '🔎', tesis: '🧭',
 function noteText(n) {
   return `${NOTE_ICON[n.kind] || '🧠'} ${n.title}\n${n.summary}${n.doc_url ? `\nAnálisis completo: ${n.doc_url}` : ''}`;
 }
+// es-ES no agrupa los miles con 4 cifras (1000): se fuerza el punto para que todo sea igual (1.000)
+const miles = (x, d = 0) => Number(x).toLocaleString('es-ES', { minimumFractionDigits: d, maximumFractionDigits: d, useGrouping: 'always' });
+const IDEA_END = { objetivo: '✅ Objetivo alcanzado', stop: '❌ Salida tocada', caducada: '⌛ Caducada', cerrada: '🔒 Cerrada' };
+const pctTxt = (x) => `${x > 0 ? '+' : ''}${Number(x).toLocaleString('es-ES', { maximumFractionDigits: 2 })} %`;
+const eurTxt = (x) => `${x > 0 ? '+' : ''}${miles(x, 2)} €`;
+function ideaClosedText(n) {
+  const sized = n.result_eur != null ? ` (${eurTxt(n.result_eur)} sobre ${miles(n.size_eur)} €, comisiones incluidas)` : '';
+  return `${IDEA_END[n.status] || n.status} · ${n.title}\nResultado: ${pctTxt(n.result_pct)}${sized}. ${n.executed ? 'La ejecutaste.' : 'Era una propuesta: esto es lo que hubiera pasado.'}`;
+}
 // Análisis guardados por Claude: últimos 30 días + ideas de operación todavía abiertas
 async function actNotes(uid, b, today) {
   const recent = await sb(`orbit_notes?select=id,kind,ticker,title,summary,doc_url,direction,horizon,entry_price,target_price,stop_price,currency,expires_on,status,result_pct,created_at&user_id=eq.${uid}&created_at=gte.${addDays(today, -30)}&order=created_at.desc&limit=30`) || [];
-  const open = await sb(`orbit_notes?select=id,ticker,title,direction,entry_price,target_price,stop_price,currency,expires_on,status,created_at&user_id=eq.${uid}&kind=eq.idea&status=eq.abierta&order=created_at.desc&limit=20`) || [];
+  const open = await sb(`orbit_notes?select=id,ticker,title,direction,entry_price,target_price,stop_price,currency,expires_on,status,last_price,result_pct,created_at&user_id=eq.${uid}&kind=eq.idea&status=eq.abierta&order=created_at.desc&limit=20`) || [];
+  const closed = await sb(`orbit_notes?select=id,status,result_pct,result_eur&user_id=eq.${uid}&kind=eq.idea&status=neq.abierta&limit=200`) || [];
+  const score = scoreboard(closed);
   const fmt = (x, c) => x == null ? '—' : `${Number(x).toLocaleString('es-ES', { maximumFractionDigits: 2 })} ${c || ''}`.trim();
-  const ideas = open.map(i => `💡 ${i.ticker || ''} ${i.direction || ''} · entrada ${fmt(i.entry_price, i.currency)} · objetivo ${fmt(i.target_price, i.currency)} · salida ${fmt(i.stop_price, i.currency)} · hasta ${i.expires_on || '—'}`);
-  const msg = recent.length ? [...recent.slice(0, 5).map(noteText), ...(ideas.length ? ['Ideas abiertas:', ...ideas] : [])].join('\n\n')
-    : 'Todavía no hay análisis guardados en Orbit.';
-  return ok(msg, { notes: recent, open_ideas: open });
+  const ideas = open.map(i => `💡 ${i.ticker || ''} ${i.direction || ''} · entrada ${fmt(i.entry_price, i.currency)} · objetivo ${fmt(i.target_price, i.currency)} · salida ${fmt(i.stop_price, i.currency)} · hasta ${i.expires_on || '—'}${i.last_price != null ? ` · ahora ${fmt(i.last_price, i.currency)} (${pctTxt(i.result_pct)})` : ''}`);
+  const marcador = score.closed ? `Marcador de propuestas: ${score.wins} de ${score.closed} con ganancia (${score.hit_rate} %), resultado acumulado ${eurTxt(score.result_eur)}.` : null;
+  const parts = [...recent.slice(0, 5).map(noteText), ...(ideas.length ? ['Ideas abiertas:', ...ideas] : []), ...(marcador ? [marcador] : [])];
+  const msg = parts.length ? parts.join('\n\n') : 'Todavía no hay análisis guardados en Orbit.';
+  return ok(msg, { notes: recent, open_ideas: open, scoreboard: score });
 }
 
 // Radar: lista lo que se cuece en sus acciones (14 días). Con refresh=1 consulta Finnhub en el momento.

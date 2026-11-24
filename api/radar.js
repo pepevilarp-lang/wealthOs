@@ -1,8 +1,10 @@
 // radar.js — tarea diaria (vercel.json): "lo que se cuece" en las acciones de cada usuario.
 // Lee las posiciones de bolsa, consulta Finnhub (gratuito) y guarda los avisos en radar_events.
 // Instinct los recoge en GET /api/instinct?route=alerts y los envía por WhatsApp sin repetirlos.
-// ENV: SUPABASE_URL, SUPABASE_SERVICE_ROLE, FINNHUB_KEY, CRON_SECRET (Vercel la envía en cada ejecución).
+// Después revisa las propuestas de operación abiertas (orbit_notes) con TWELVEDATA_KEY: objetivo, salida o caducidad.
+// ENV: SUPABASE_URL, SUPABASE_SERVICE_ROLE, FINNHUB_KEY, TWELVEDATA_KEY, CRON_SECRET (Vercel la envía en cada ejecución).
 import { stockTickers, scanTickers, persistEvents, madridDay } from './_lib/radar.js';
+import { trackIdeas } from './_lib/ideas.js';
 
 export default async function handler(req, res) {
   const secret = process.env.CRON_SECRET;
@@ -29,7 +31,14 @@ export default async function handler(req, res) {
     try { stored += await persistEvents(uid, ev, { SU, SR }); }
     catch (e) { storeErrors.push(String(e.message || e).slice(0, 200)); console.error('[radar]', e); }
   }
-  const failed = storeErrors.length > 0;
+  // Seguimiento de las propuestas: no tumba el radar si falla, pero lo informa.
+  let ideas;
+  if (!process.env.TWELVEDATA_KEY) ideas = { error: 'Falta TWELVEDATA_KEY: no se pueden seguir las propuestas' };
+  else {
+    try { ideas = await trackIdeas({ SU, SR, key: process.env.TWELVEDATA_KEY, today }); }
+    catch (e) { ideas = { error: String(e.message || e).slice(0, 200) }; console.error('[radar] ideas', e); }
+  }
+  const failed = storeErrors.length > 0 || !!ideas.error;
   res.status(failed ? 502 : 200).json({ ok: !failed, today, users: Object.keys(userTickers).length, tickers: all,
-    events: stored, source_errors: errors.slice(0, 10), store_errors: storeErrors });
+    events: stored, source_errors: errors.slice(0, 10), store_errors: storeErrors, ideas });
 }

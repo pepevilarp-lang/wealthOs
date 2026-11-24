@@ -3,6 +3,7 @@
 process.env.SUPABASE_URL = 'https://mock.supabase.co';
 process.env.SUPABASE_SERVICE_ROLE = 'service';
 process.env.FINNHUB_KEY = 'fh-test';
+process.env.TWELVEDATA_KEY = 'td-test';
 process.env.CRON_SECRET = 'cron-test';
 import crypto from 'node:crypto';
 import { db, mockFetch, failNext } from './mock-supabase.mjs';
