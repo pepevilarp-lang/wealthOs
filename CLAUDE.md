@@ -302,6 +302,14 @@ Local: `node dev-server.mjs` (ver LOCAL.md).
   send-push: `sql/003_siri_notificaciones.sql` las añade (idempotente). send-push filtra `pref_daily=not.is.false`.
 - `/api/health` informa (sin valores) de SUPABASE_SERVICE_ROLE, CRON_SECRET, VAPID_PUBLIC/PRIVATE y NEWS_API_KEY.
 
+## Pagos con tarjeta vía Apple Pay (24 nov 2026)
+- Automatización "Wallet"/"Transacción" de Atajos de iOS → `POST /api/quick-expense { token, amount, merchant, card }`.
+- `recordCardExpense` (instinct.js): `parseCardAmount` ("12,50 €", "$10.00", "GBP 8.40", número), otras monedas al BCE
+  con el original en el concepto, categoría aprendida (`learnedCategory`: la más repetida del usuario para ese comercio,
+  sin contar Altres) o por palabras clave, cuenta de efectivo por el nombre de la tarjeta, id por contenido + minuto.
+- Solo pagos presenciales con Apple Pay. Siguiente paso posible: banca abierta (Enable Banking, modo restringido gratuito)
+  para compras online, transferencias y Bizum, deduplicando con lo que entra por aquí. Pruebas: `tests/test-card-expense.mjs`.
+
 ## Noticias de la mañana de Instinct = selección de Orbit (21 oct 2026)
 - La selección diaria de la app (`loadDailyInsights`, clave `wealthos_insights_<uid>_<fecha UTC>`) se sincroniza con
   user_kv (prefijo añadido a `KV_PREFIXES`).
