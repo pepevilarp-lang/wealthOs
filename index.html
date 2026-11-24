@@ -1114,7 +1114,7 @@ const FMP_BASE = '/api/market?p=fmp&u=';
   const nativeFetch = window.fetch.bind(window);
   window.fetch = async function (input, init) {
     const url = typeof input === 'string' ? input : (input && input.url) || '';
-    if (/^\/api\/(groq|market)\b/.test(url) && typeof sb !== 'undefined' && sb && sb.auth) {
+    if (/^\/api\/(groq|market|prices)\b/.test(url) && typeof sb !== 'undefined' && sb && sb.auth) {
       const { data, error } = await sb.auth.getSession();
       if (error) console.warn('[sesión] No se pudo leer la sesión para', url, error);
       const tok = data && data.session && data.session.access_token;
@@ -3110,7 +3110,6 @@ function renderDashPanels() {
   <div class="ov-grid ov-grid-2">${ovSpendCard()}<div class="ov-card" id="ov-trade-mini"><div class="ov-hd"><span>Operaciones</span></div><div class="ov-empty">Cargando propuestas…</div></div></div>`;
 }
 function afterDashPanels() {
-  ovLoadDayChanges().catch(e => _silenced('ovLoadDayChanges', e));
   ovLoadTradeMini().catch(e => _silenced('ovLoadTradeMini', e));
 }
 
@@ -3121,7 +3120,7 @@ function ovPositions() {
     const pnl = (p.entry > 0 && p.lastPrice > 0) ? (p.lastPrice / p.entry - 1) * 100 : null;
     out.push({ bid: b.id, name: p.name || p.ticker || '—', ticker: (p.ticker || '').toUpperCase(), value: v, pnl, robo: !!p.isRoboAdvisor,
       equity: String(p.type || '').toUpperCase() === 'EQUITY', stale: !!p.price_stale, date: p.price_date || null, ccy: p.priceCurrency || p.currency || 'EUR',
-      last: p.lastPrice || null, err: p.price_error || null });
+      last: p.lastPrice || null, err: p.price_error || null, day: p.day_change_pct != null ? +p.day_change_pct : null, src: p.price_source || null });
   }));
   return out.sort((a, b) => b.value - a.value);
 }
@@ -3132,7 +3131,7 @@ function ovStocksCard() {
   const rows = ps.slice(0, 8).map(p => {
     const w = p.value / tot * 100;
     const chips = [
-      p.equity && !p.stale ? `<span class="ov-chip" id="ov-d-${escH(p.ticker)}">Hoy …</span>` : '',
+      p.day != null && !p.stale ? `<span class="ov-chip ${ovSign(p.day)}" title="Variación de la última sesión · ${escH(p.src || '')}">${ovPct(p.day, 2)} (${ovDate(p.date)})</span>` : '',
       p.pnl != null ? `<span class="ov-chip ${ovSign(p.pnl)}" title="Desde tu precio de compra, en ${escH(p.ccy)}">${ovPct(p.pnl)} desde compra</span>` : '',
       p.stale ? `<span class="ov-chip warn" title="${escH(p.err || 'Sin precio reciente')}">Precio ${p.date ? 'del ' + ovDate(p.date) : 'sin actualizar'}</span>` : '',
     ].join('');
@@ -3145,26 +3144,6 @@ function ovStocksCard() {
   return `<div class="ov-card" onclick="goto('patrimonio')"><div class="ov-hd"><span>Tu bolsa hoy</span><b>${fE(tot)}</b></div>${rows}
     ${ps.length > 8 ? `<div class="ov-foot">y ${ps.length - 8} más</div>` : ''}</div>`;
 }
-// Variación del día de las acciones (Twelve Data vía /api/market). Caché de 5 minutos por sesión.
-async function ovLoadDayChanges() {
-  const tks = [...new Set(ovPositions().filter(p => p.equity && !p.stale && p.ticker).map(p => p.ticker))].slice(0, 6);
-  for (const tk of tks) {
-    const el = $('ov-d-' + tk); if (!el) continue;
-    let q = ovCache('ov_q_' + tk, 5 * 60e3);
-    if (!q) {
-      try {
-        const r = await fetch(`${TD_BASE}/quote?symbol=${encodeURIComponent(tk)}`);
-        const d = await r.json();
-        if (!r.ok || d.status === 'error' || d.percent_change == null) throw new Error(d.message || d.error || 'HTTP ' + r.status);
-        q = { pct: +d.percent_change, date: String(d.datetime || '').slice(0, 10) }; ovCacheSet('ov_q_' + tk, q);
-      } catch (e) { console.error('[Hoy] variación del día', tk, e); el.className = 'ov-chip warn'; el.textContent = 'Hoy: sin dato'; el.title = String(e.message || e); continue; }
-    }
-    const cur = $('ov-d-' + tk); if (!cur) continue;
-    cur.className = 'ov-chip ' + ovSign(q.pct); cur.textContent = `${ovPct(q.pct, 2)} ${q.date ? '(' + ovDate(q.date) + ')' : 'hoy'}`;
-    cur.title = 'Variación de la última sesión · Twelve Data';
-  }
-}
-
 function ovDonut(segs, total, size = 156) {
   const r = 52, C = 2 * Math.PI * r; let acc = 0;
   const arcs = segs.map(s => { const len = s.v / total * C; const a = `<circle cx="66" cy="66" r="${r}" fill="none" stroke="${s.color}" stroke-width="16" stroke-dasharray="${Math.max(0, len - 2).toFixed(2)} ${C.toFixed(2)}" stroke-dashoffset="${(-acc).toFixed(2)}" transform="rotate(-90 66 66)"><title>${escH(s.label)}: ${ovEur(s.v)}</title></circle>`; acc += len; return a; }).join('');
@@ -13066,23 +13045,31 @@ async function updateBolsaPricesForBlock(blockId, silent = false) {
   const needIsin = [];
   const r2 = (n) => Math.round(n * 100) / 100;
 
-  for (const pos of tickerPositions) {
+  // Una sola llamada al servidor (/api/prices): símbolo exacto por ISIN, Yahoo Finance y Twelve Data de respaldo
+  let quotes;
+  try {
+    const r = await fetch('/api/prices', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ positions: tickerPositions.map(p => ({ ticker: p.ticker, isin: p.isin || null, currency: p.currency || null,
+        priceCurrency: p.priceCurrency || null, quote_symbol: p.quote_symbol || null })) }) });
+    const d = await r.json().catch(() => null);
+    if (!r.ok || !d || !Array.isArray(d.quotes)) throw new Error((d && d.error) || 'HTTP ' + r.status);
+    quotes = d.quotes;
+  } catch (e) { console.error('[precios]', e); if (!silent) toast('⚠ No se pudieron pedir los precios: ' + e.message, 'err'); return; }
+
+  for (let k = 0; k < tickerPositions.length; k++) {
+    const pos = tickerPositions[k], q = quotes[k];
     try {
-      // Resolver: ISIN dinámico primero (identifica el ETF exacto), luego sufijo por moneda
-      const userCcy = pos.priceCurrency || pos.currency || null;
-      const resolvedTicker = await resolveSymbol(pos, userCcy);
-      const priceData = await fetchPrice(resolvedTicker, { currency: userCcy });
-      if (!(priceData?.price > 0)) throw new Error(priceData?.message || 'sin precio');
-      // Moneda: la que da la fuente; si no la da, la de la posición. Nunca se supone.
-      const ccy = (priceData.currency || userCcy || '').trim();
-      if (!ccy) throw new Error('la fuente no indica la moneda: ponla en la posición');
-      const valueEur = await convertFx(pos.qty * priceData.price, ccy, 'EUR');
-      pos.lastPrice = priceData.price;
-      pos.priceCurrency = ccy;
-      pos.valueNative = r2(pos.qty * priceData.price);
+      if (!q || !q.ok) throw new Error((q && q.error) || 'sin precio');
+      const valueEur = await convertFx(pos.qty * q.price, q.currency, 'EUR');   // tipo del BCE; si no hay, lanza y se marca antiguo
+      pos.lastPrice = q.price;
+      pos.priceCurrency = q.currency;
+      pos.valueNative = r2(pos.qty * q.price);
       pos.value = r2(valueEur);
-      pos.price_date = priceData.date || new Date().toISOString().slice(0, 10);
-      pos.price_source = priceData.source || (priceData.sources || []).join('+') || 'mercado';
+      pos.price_date = q.date;
+      pos.price_source = q.source;
+      pos.quote_symbol = q.symbol;
+      if (q.exchange) pos.quote_exchange = q.exchange;
+      pos.day_change_pct = q.change_pct;
       pos.price_stale = false;
       delete pos.price_error;
       updatedCount++;

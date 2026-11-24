@@ -78,6 +78,18 @@ def market(route):
         body = {}
     route.fulfill(status=200, content_type='application/json', body=json.dumps(body))
 
+def prices(route):
+    body = json.loads(route.request.post_data or '{}')
+    table = {'IDXA': (121.5, 'EUR', -0.4), 'IDXB': (53.1, 'EUR', 0.3), 'IDXC': (56.4, 'EUR', -1.1), 'ACME': (109.5, 'USD', 1.37), 'GLBX': (110.2, 'USD', -0.82)}
+    out = []
+    for p in body.get('positions', []):
+        t = p.get('ticker')
+        if t in table:
+            pr, c, ch = table[t]; out.append({'ok': True, 'symbol': t + ('.DE' if c == 'EUR' else ''), 'price': pr, 'currency': c, 'date': d(0), 'change_pct': ch, 'exchange': 'XETRA' if c == 'EUR' else 'NasdaqGS', 'source': 'Yahoo Finance'})
+        else:
+            out.append({'ok': False, 'error': 'no encontrado'})
+    route.fulfill(status=200, content_type='application/json', body=json.dumps({'quotes': out}))
+
 errors = []
 with sync_playwright() as p:
     br = p.chromium.launch(executable_path='/usr/bin/google-chrome', args=['--no-sandbox'])
@@ -87,14 +99,17 @@ with sync_playwright() as p:
         pg.on('console', lambda m: errors.append(f'[{name}] {m.type}: {m.text[:160]}') if m.type == 'error' and 'ERR_TUNNEL' not in m.text and 'tipos de cambio' not in m.text and 'tipo de cambio' not in m.text and 'Supabase SDK' not in m.text else None)
         pg.on('pageerror', lambda e: errors.append(f'[{name}] pageerror: {e}'))
         pg.route('**/api/market**', market)
-        pg.route('**/api/**', lambda r: r.fulfill(status=200, content_type='application/json', body='{}') if '/api/market' not in r.request.url else r.fallback())
+        pg.route('**/api/prices', prices)
+        pg.route('**/api/**', lambda r: r.fulfill(status=200, content_type='application/json', body='{}') if '/api/market' not in r.request.url and '/api/prices' not in r.request.url else r.fallback())
         pg.goto('http://127.0.0.1:8765/index.html', wait_until='domcontentloaded')
         pg.wait_for_timeout(7000)
         pg.evaluate('() => { window.Chart = window.Chart || class { constructor(){} destroy(){} update(){} }; }')
         pg.evaluate('enterDemo()')
         pg.wait_for_timeout(2500)
         pg.evaluate(SETUP, [IDEAS, ym])
-        pg.wait_for_timeout(1800)
+        pg.evaluate("() => { _fxCache = { rates: { EUR: 1, USD: 1.1, GBP: 0.85 }, ts: Date.now(), date: 'prueba' }; }")
+        pg.evaluate("() => refreshAllPrices(true)")
+        pg.wait_for_timeout(2500)
         pg.evaluate("() => document.querySelectorAll('.overlay, .modal-bg, .mo, [id^=m-]').forEach(e => { if (getComputedStyle(e).position === 'fixed') e.style.display = 'none'; })")
         pg.screenshot(path=f'{OUT}/{name}-hoy.png', full_page=True)
         pg.evaluate("goto('trading')")
