@@ -1485,7 +1485,7 @@ const PAGE_TITLES = {
 // UTILITIES
 // ═══════════════════════════════════════════════════════════════════════
 const $ = id => document.getElementById(id);
-const fE = v => new Intl.NumberFormat('es-ES',{style:'currency',currency:'EUR',maximumFractionDigits:0}).format(v||0);
+const fE = v => new Intl.NumberFormat('es-ES',{style:'currency',currency:'EUR',maximumFractionDigits:0,useGrouping:'always'}).format(v||0);
 const fEsm = v => new Intl.NumberFormat('es-ES',{style:'currency',currency:'EUR',maximumFractionDigits:2}).format(v||0);
 const fN = v => new Intl.NumberFormat('es-ES',{maximumFractionDigits:2}).format(v||0);
 const fD = d => new Date(d).toLocaleDateString('es-ES',{day:'numeric',month:'short',year:'2-digit'});
