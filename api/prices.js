@@ -1,85 +1,26 @@
-// /api/prices.js — Yahoo Finance closing prices proxy
-// Avoids CORS issues with direct browser calls
+// /api/prices — precios de las posiciones de bolsa (POST { positions: [{ ticker, isin, currency, quote_symbol }] }).
+// Una sola vía de precios para la app: resuelve cada posición a su símbolo exacto (por ISIN) y cotiza con
+// Yahoo Finance; Twelve Data de respaldo para EE. UU. Exige la sesión de Supabase. Ver api/_lib/quotes.js.
+import { sessionUser } from './_lib/session.js';
+import { quotePositions } from './_lib/quotes.js';
 
 export default async function handler(req, res) {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-  res.setHeader('Cache-Control', 's-maxage=3600'); // 1hr cache at edge
+  res.setHeader('Content-Type', 'application/json');
+  if (req.method !== 'POST') return res.status(405).json({ error: 'Usa POST con { positions: [...] }' });
+  let uid;
+  try { uid = await sessionUser(req); }
+  catch (e) { return res.status(500).json({ error: e.message }); }
+  if (!uid) return res.status(401).json({ error: 'Inicia sesión en Orbit para consultar precios.' });
 
-  if (req.method === 'OPTIONS') return res.status(200).end();
-
-  const { tickers } = req.query; // ?tickers=MSFT,NVDA,AAPL
-
-  if (!tickers) {
-    return res.status(400).json({ error: 'tickers param required. E.g. ?tickers=MSFT,NVDA' });
-  }
-
-  const tickerList = tickers.split(',').map(t => t.trim().toUpperCase()).filter(Boolean).slice(0, 20);
-
-  const results = {};
-  const errors = {};
-
-  await Promise.all(tickerList.map(async (ticker) => {
-    try {
-      const url = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?interval=1d&range=5d&includePrePost=false`;
-      const r = await fetch(url, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (compatible)',
-          'Accept': 'application/json',
-        },
-        signal: AbortSignal.timeout(8000),
-      });
-
-      if (!r.ok) {
-        errors[ticker] = `HTTP ${r.status}`;
-        return;
-      }
-
-      const data = await r.json();
-      const result = data?.chart?.result?.[0];
-
-      if (!result) {
-        errors[ticker] = 'No data';
-        return;
-      }
-
-      const meta = result.meta;
-      const quotes = result.indicators?.quote?.[0];
-      const timestamps = result.timestamp;
-
-      if (!quotes || !timestamps) {
-        errors[ticker] = 'No quotes';
-        return;
-      }
-
-      // Get last valid close
-      const closes = quotes.close;
-      let lastClose = null;
-      let lastDate = null;
-
-      for (let i = closes.length - 1; i >= 0; i--) {
-        if (closes[i] !== null && closes[i] !== undefined) {
-          lastClose = closes[i];
-          lastDate = new Date(timestamps[i] * 1000).toISOString().split('T')[0];
-          break;
-        }
-      }
-
-      results[ticker] = {
-        price: lastClose ? Math.round(lastClose * 100) / 100 : null,
-        date: lastDate,
-        currency: meta.currency || 'USD',
-        name: meta.longName || meta.shortName || ticker,
-        change: meta.regularMarketChangePercent ? Math.round(meta.regularMarketChangePercent * 100) / 100 : null,
-      };
-    } catch (e) {
-      errors[ticker] = e.message;
-    }
+  const body = typeof req.body === 'string' ? JSON.parse(req.body || '{}') : (req.body || {});
+  const positions = Array.isArray(body.positions) ? body.positions.slice(0, 40) : null;
+  if (!positions || !positions.length) return res.status(400).json({ error: 'Faltan las posiciones' });
+  const clean = positions.map(p => ({
+    ticker: String(p.ticker || '').slice(0, 24), isin: p.isin ? String(p.isin).slice(0, 12) : null,
+    currency: p.currency ? String(p.currency).slice(0, 5) : null, priceCurrency: p.priceCurrency ? String(p.priceCurrency).slice(0, 5) : null,
+    quote_symbol: p.quote_symbol ? String(p.quote_symbol).slice(0, 24) : null,
   }));
-
-  return res.status(200).json({
-    prices: results,
-    errors: Object.keys(errors).length > 0 ? errors : undefined,
-    timestamp: new Date().toISOString(),
-  });
+  const quotes = await quotePositions(clean, { tdKey: process.env.TWELVEDATA_KEY });
+  res.setHeader('Cache-Control', 'private, max-age=60');
+  return res.status(200).json({ quotes, at: new Date().toISOString() });
 }
