@@ -3003,6 +3003,7 @@ function renderDash() {
       </div>
       ${renderDashTiles()}
       </div>
+      <div id="dash-notes"></div>
       ${renderDailyPulse()}
       ${renderComprehensionHero()}
 
@@ -3033,6 +3034,50 @@ function renderDash() {
     setTimeout(()=>{ drawLine('dash-line'); }, 30);
   }
   setTimeout(() => { try { renderObjectives(); } catch(e){ _silenced('renderDash', e); } }, 50);
+  setTimeout(() => { loadOrbitNotes().catch(e => _silenced('loadOrbitNotes', e)); }, 60);
+}
+
+// ═══ Análisis de Claude (tabla orbit_notes): revisiones, radar, tesis e ideas de 1 semana a 3 meses ═══
+// Los escribe Claude desde el chat o la tarea semanal. Solo lectura aquí; Instinct los envía por WhatsApp.
+const NOTE_KIND = { idea:['Idea de operación','ti-bulb'], cartera:['Revisión de cartera','ti-chart-pie'], radar:['Radar','ti-radar'],
+  tesis:['Tesis','ti-compass'], resultados:['Resultados','ti-report-money'], analisis:['Análisis','ti-brain'] };
+const NOTE_STATUS = { abierta:'Abierta', objetivo:'Objetivo alcanzado', stop:'Salida por stop', caducada:'Caducada', cerrada:'Cerrada' };
+async function loadOrbitNotes(){
+  const box = $('dash-notes'); if (!box) return;
+  if (demo || !sb || !user) { box.innerHTML = ''; return; }
+  const { data, error } = await sb.from('orbit_notes')
+    .select('id,kind,ticker,title,summary,doc_url,sources,direction,horizon,entry_price,target_price,stop_price,currency,expires_on,status,result_pct,created_at')
+    .order('created_at', { ascending:false }).limit(8);
+  if (error) {
+    box.innerHTML = `<div class="card" style="padding:14px 18px;margin-bottom:16px;font-size:12.5px;color:var(--neg)">No se pudieron cargar los análisis: ${escH(error.message)}</div>`;
+    return;
+  }
+  if (!data || !data.length) { box.innerHTML = ''; return; }
+  const num = (x, c) => x == null ? '—' : `${Number(x).toLocaleString('es-ES',{maximumFractionDigits:2})}${c?' '+escH(c):''}`;
+  const card = (n) => {
+    const [label, icon] = NOTE_KIND[n.kind] || NOTE_KIND.analisis;
+    const date = new Date(n.created_at).toLocaleDateString('es-ES',{day:'numeric',month:'short'});
+    const url = safeUrl(n.doc_url);
+    const srcs = (Array.isArray(n.sources) ? n.sources : []).filter(x => x && safeUrl(x.url)).slice(0, 4)
+      .map(x => `<a href="${safeUrl(x.url)}" target="_blank" rel="noopener" style="color:var(--t-3)">${escH(x.title || 'Fuente')}</a>`).join(' · ');
+    const idea = n.kind === 'idea' ? `<div style="display:flex;flex-wrap:wrap;gap:6px 14px;margin-top:8px;font-size:11.5px;color:var(--t-2);font-family:var(--mono)">
+        <span>${escH(n.direction || '')} ${escH(n.horizon || '')}</span><span>Entrada ${num(n.entry_price, n.currency)}</span>
+        <span>Objetivo ${num(n.target_price, n.currency)}</span><span>Salida ${num(n.stop_price, n.currency)}</span>
+        <span>Hasta ${escH(n.expires_on || '—')}</span><span>${escH(NOTE_STATUS[n.status] || n.status || '')}${n.result_pct != null ? ` · ${num(n.result_pct)} %` : ''}</span></div>` : '';
+    return `<div style="padding:14px 18px;border-top:1px solid var(--line)">
+      <div style="display:flex;justify-content:space-between;gap:10px;align-items:baseline">
+        <div style="font-size:13.5px;font-weight:600;color:var(--t-1)"><i class="ti ${icon}" style="vertical-align:-2px;margin-right:6px;color:var(--gold)"></i>${escH(n.title)}</div>
+        <div style="font-size:11px;color:var(--t-3);white-space:nowrap">${escH(label)} · ${escH(date)}</div>
+      </div>
+      <div style="font-size:12.5px;color:var(--t-2);line-height:1.55;margin-top:5px">${escH(n.summary)}</div>${idea}
+      ${url || srcs ? `<div style="font-size:11px;margin-top:8px;color:var(--t-3)">${url ? `<a href="${url}" target="_blank" rel="noopener" style="color:var(--gold);font-weight:600">Análisis completo</a>` : ''}${url && srcs ? ' · ' : ''}${srcs}</div>` : ''}
+    </div>`;
+  };
+  box.innerHTML = `<div class="card" style="margin-bottom:16px;padding:0;overflow:hidden">
+    <div style="padding:14px 18px;display:flex;justify-content:space-between;align-items:center">
+      <div style="font-size:13px;font-weight:600;color:var(--t-1)">Análisis de Claude</div>
+      <div style="font-size:11px;color:var(--t-3)">Información, no recomendación de inversión</div>
+    </div>${data.map(card).join('')}</div>`;
 }
 
 function drawDonut(byType, t, canvasId, legId) {
