@@ -112,6 +112,10 @@ con consultar `/alerts` para recibirlos por WhatsApp.
 Análisis guardados en Orbit (tabla `orbit_notes`): revisiones de cartera, radar, tesis e ideas de operación de 1 semana a
 3 meses, con resumen listo para WhatsApp y enlace al análisis completo. Incluye las ideas aún abiertas con entrada,
 objetivo, salida y caducidad. `GET /alerts` ya entrega los de los últimos 7 días sin repetirlos.
+Las ideas se siguen solas cada día (tarea `/api/radar`, velas diarias de Twelve Data): al tocar objetivo o salida, o al
+caducar, se cierran con su resultado en % y en euros sobre su tamaño (500–1.000 €, menos 2 € de comisiones), se hayan
+ejecutado o no. `/alerts` avisa una vez de cada cierre y `/notes` añade el precio actual de las abiertas y el marcador
+(`data.scoreboard`: cerradas, con ganancia, % de acierto, resultado acumulado).
 
 ### Lectura
 `GET /assets` · `GET /positions` · `GET /summary` · `GET /alerts` · `GET /radar` · `GET /notes`

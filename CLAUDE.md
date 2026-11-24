@@ -330,8 +330,17 @@ Local: `node dev-server.mjs` (ver LOCAL.md).
   `notifications_sent`); si la tabla falla, avisa una vez al día y el resto de avisos sigue. Ruta `GET radar`
   (`?refresh=1` consulta en el momento). Contrato en docs/API.md.
 - Pruebas: `tests/test-radar.mjs` (20 casos, datos ficticios).
-- Pendiente (decidido, no hecho): cartera de trading separada con tope del 5 % de la bolsa, reglas de entrada/salida y
-  diario de operaciones; avisos de precios, resultados y private equity.
+- Pendiente: avisos de precios, resultados y private equity.
+
+## Trading y seguimiento de propuestas (24 nov 2026)
+- Reglas del usuario (sustituyen al tope del 5 %): bote fijo de 1.000 € que sale del efectivo, no de los ETF; una operación
+  con dinero a la vez; tamaño entre 500 y 1.000 €; si el bote baja de 500 €, se para y se revisa. Cada propuesta, analizada
+  a fondo y con plan cerrado: tesis, catalizador con fecha, entrada, objetivo, salida, caducidad y qué la invalida.
+- `sql/006_seguimiento_ideas.sql` (aplicada): `price_symbol` (Twelve Data), `entry_date`, `size_eur` (500–1.000, con CHECK),
+  `executed`, `last_price`, `exit_price`, `closed_on`, `result_eur`.
+- `api/_lib/ideas.js`: `evaluateIdea` (si toca objetivo y salida el mismo día cuenta la salida; caducada = último cierre
+  antes de la fecha límite; 2 € de comisiones), `trackIdeas` (lo llama `/api/radar` cada día) y `scoreboard`.
+- Se sigue toda propuesta, ejecutada o no: el marcador muestra qué hubiera pasado. Pruebas: `tests/test-ideas.mjs` (13).
 
 ## Análisis de Claude en Orbit (24 nov 2026)
 - Petición del usuario: que los análisis de Claude (chat y tarea semanal) lleguen a Orbit y a WhatsApp, incluidas 3 ideas
