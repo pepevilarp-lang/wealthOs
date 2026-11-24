@@ -20,7 +20,8 @@ Supabase (Postgres con seguridad por fila). IA a través de Groq.
 5. **Ninguna clave en el cliente.** Solo `process.env` dentro de `/api`.
 6. **Menos funciones, que funcionen bien.** No añadir funcionalidades no pedidas. Núcleo: patrimonio
    (cartera, private equity, efectivo), gastos, precios, política y registro de decisiones.
-   Congelados: social, noticias, resumen diario, push no esencial.
+   Congelados: social, resumen diario, push no esencial. Excepción decidida por el usuario (24 nov 2026): el radar
+   de empresas (avisos públicos sobre sus acciones) entregado por WhatsApp vía Instinct.
 7. **Cambios pequeños.** Un cambio lógico por commit, con mensaje descriptivo. Nunca borrar y
    volver a subir archivos enteros.
 8. **Lógica financiera con prueba previa.** Antes de cambiar un cálculo, escribir casos con números
@@ -315,3 +316,19 @@ Local: `node dev-server.mjs` (ver LOCAL.md).
   en código con el registro (llamada > pendiente, distribución desproporcionada, divisa, compromiso del fondo).
 - `loadDemo` con datos ficticios y redondos; ejemplos sin nombres ni importes que parezcan reales.
 - Simulador de Supabase: 204 sin cuerpo (antes el camino de deshacer el historial no se probaba).
+
+## Radar de empresas (24 nov 2026)
+- Petición del usuario: estar al día de "lo que se cuece" en sus acciones, con avisos por WhatsApp vía Instinct y solo
+  fuentes gratuitas. Solo información pública; cada aviso con fecha y fuente; nada de recomendaciones de compra o venta.
+- `api/_lib/radar.js`: acciones de EE. UU. de los bloques de bolsa (no ETF, cripto ni robo-advisor) y cuatro reglas sobre
+  Finnhub: directivos (formulario 4; compras ≥ 50.000 USD, ventas ≥ 1 M USD; ignora opciones y concesiones), analistas
+  (cambio ≥ 10 puntos en % de compra o ≥ 2 ventas más), 8-K y noticias con palabras clave materiales (máx. 3 por acción).
+  Una fuente caída se anota y no tumba las demás.
+- `api/radar.js`: tarea diaria 06:30 UTC (`vercel.json`, `CRON_SECRET`); guarda en `radar_events` (`sql/004_radar.sql`,
+  aplicada; seguridad por fila, solo lectura para el usuario, único por usuario y clave).
+- `api/instinct.js`: `computeAlerts` añade los avisos de los últimos 7 días (clave `radar:<key>`, sin repetir vía
+  `notifications_sent`); si la tabla falla, avisa una vez al día y el resto de avisos sigue. Ruta `GET radar`
+  (`?refresh=1` consulta en el momento). Contrato en docs/API.md.
+- Pruebas: `tests/test-radar.mjs` (20 casos, datos ficticios).
+- Pendiente (decidido, no hecho): cartera de trading separada con tope del 5 % de la bolsa, reglas de entrada/salida y
+  diario de operaciones; avisos de precios, resultados y private equity.

@@ -100,8 +100,16 @@ afecta y su peso, por qué importa, qué vigilar y el enlace. `?limit=5` para m�
 Si la app aún no la ha preparado hoy, el servidor la genera con el mismo método (requiere `FINNHUB_KEY` en Vercel) y
 la guarda para que la app muestre exactamente la misma.
 
+### `GET /radar` — lo que se cuece en sus acciones
+Avisos públicos de los últimos 14 días sobre las acciones sueltas del usuario (no los ETF): compras y ventas de
+directivos (formulario 4, compras desde 50.000 USD y ventas desde 1 M USD), cambios de recomendación de los
+analistas, hechos relevantes (8-K) y noticias con palabras clave materiales (CEO, adquisición, investigación,
+previsiones…). Cada aviso lleva fecha y fuente. `?refresh=1` consulta Finnhub en el momento (requiere `FINNHUB_KEY`).
+La tarea diaria `/api/radar` (06:30 UTC) los prepara; **`GET /alerts` ya los incluye y no los repite**, así que basta
+con consultar `/alerts` para recibirlos por WhatsApp.
+
 ### Lectura
-`GET /assets` · `GET /positions` · `GET /summary` · `GET /alerts`
+`GET /assets` · `GET /positions` · `GET /summary` · `GET /alerts` · `GET /radar`
 
 ## Si el entorno solo permite GET
 Cada escritura admite la misma ruta por GET con `_method`, el token en la cabecera y los datos en la URL:
