@@ -861,6 +861,7 @@ img{transition:opacity .25s}
         <button class="ni" onclick="goto('patrimonio',this)"><span class="ni-ic"><i class="ti ti-wallet"></i></span>Cartera</button>
         <button class="ni" onclick="goto('flujos',this)"><span class="ni-ic"><i class="ti ti-arrows-exchange"></i></span>Gastos</button>
         <button class="ni" onclick="goto('insights',this)"><span class="ni-ic"><i class="ti ti-news"></i></span>Noticias</button>
+        <button class="ni" onclick="goto('trading',this)"><span class="ni-ic"><i class="ti ti-target-arrow"></i></span>Operaciones</button>
         <button class="ni" onclick="goto('advisor',this)"><span class="ni-ic"><i class="ti ti-sparkles"></i></span>Mentor</button>
       </div>
       <div class="sb-group" style="margin-top:4px;padding-top:8px;border-top:1px solid var(--line-2)">
@@ -938,6 +939,7 @@ img{transition:opacity .25s}
 
       <!-- Insights -->
       <div class="page" id="p-insights"><div class="pc" id="insights-content"></div></div>
+      <div class="page" id="p-trading"><div class="pc" id="trading-content"></div></div>
       <div class="page" id="p-friends"><div class="pc" id="friends-content"></div></div>
 
       <!-- Goals -->
@@ -977,6 +979,7 @@ img{transition:opacity .25s}
     <button onclick="goto('patrimonio')"><i class="ti ti-wallet"></i><span>Cartera</span></button>
     <button onclick="goto('flujos')"><i class="ti ti-arrows-exchange"></i><span>Gastos</span></button>
     <button onclick="goto('insights')"><i class="ti ti-news"></i><span>Noticias</span></button>
+    <button onclick="goto('trading')"><i class="ti ti-target-arrow"></i><span>Trading</span></button>
     <button onclick="goto('advisor')"><i class="ti ti-sparkles"></i><span>Mentor</span></button>
   </nav>
 </div>
@@ -1471,6 +1474,7 @@ const PAGE_TITLES = {
   documentos:   {t:'Documentos',         s:'Archivo central de toda tu información'},
   reporting:    {t:'Reporting',          s:'Informes claros de tu dinero'},
   insights:     {t:'Noticias',           s:'Qué pasa ahí fuera y cómo te afecta'},
+  trading:      {t:'Operaciones',        s:'Propuestas a corto plazo y cómo habrían ido'},
   friends:      {t:'Amigos',              s:'Comparte y aprende con tu círculo'},
   goals:        {t:'Cartera',            s:'Objetivos'},
   tactical:     {t:'Cartera',            s:'Qué hacer con tu cash'},
@@ -2806,6 +2810,7 @@ function goto(page, el) {
   if (page === 'documentos') renderDocs();
   if (page === 'reporting') renderReporting();
   if (page === 'insights') renderInsights();
+  if (page === 'trading') renderTrading();
   if (page === 'friends') renderFriends();
   if (page === 'goals') renderGoals();
   if (page === 'tactical') renderTactical();
@@ -2892,6 +2897,7 @@ function renderMobNav() {
     ${it('patrimonio','<i class="ti ti-wallet"></i>','Activos')}
     ${it('flujos','<i class="ti ti-arrows-exchange"></i>','Gastos')}
     ${it('insights','<i class="ti ti-news"></i>','Noticias')}
+    ${it('trading','<i class="ti ti-target-arrow"></i>','Operaciones')}
     ${groupBlocksByType().map(([t,bs])=>`
       <div class="sb-label" style="color:${BT[t].color}">${BT[t].ic} ${BT[t].label}</div>
       <div class="sb-block">
@@ -3003,9 +3009,10 @@ function renderDash() {
       </div>
       ${renderDashTiles()}
       </div>
+      ${renderDashPanels()}
+      ${renderComprehensionHero()}
       <div id="dash-notes"></div>
       ${renderDailyPulse()}
-      ${renderComprehensionHero()}
 
       ${renderDashBento()}
       ${renderCoachingCards()}
@@ -3035,6 +3042,7 @@ function renderDash() {
   }
   setTimeout(() => { try { renderObjectives(); } catch(e){ _silenced('renderDash', e); } }, 50);
   setTimeout(() => { loadOrbitNotes().catch(e => _silenced('loadOrbitNotes', e)); }, 60);
+  if (blocks.filter(b=>!b.deleted).length > 0) setTimeout(afterDashPanels, 80);
 }
 
 // ═══ Análisis de Claude (tabla orbit_notes): revisiones, radar, tesis e ideas de 1 semana a 3 meses ═══
@@ -3047,7 +3055,7 @@ async function loadOrbitNotes(){
   if (demo || !sb || !user) { box.innerHTML = ''; return; }
   const { data, error } = await sb.from('orbit_notes')
     .select('id,kind,ticker,title,summary,doc_url,sources,direction,horizon,entry_price,target_price,stop_price,currency,expires_on,status,result_pct,created_at')
-    .order('created_at', { ascending:false }).limit(8);
+    .neq('kind', 'idea').order('created_at', { ascending:false }).limit(6);
   if (error) {
     box.innerHTML = `<div class="card" style="padding:14px 18px;margin-bottom:16px;font-size:12.5px;color:var(--neg)">No se pudieron cargar los análisis: ${escH(error.message)}</div>`;
     return;
@@ -3078,6 +3086,284 @@ async function loadOrbitNotes(){
       <div style="font-size:13px;font-weight:600;color:var(--t-1)">Análisis de Claude</div>
       <div style="font-size:11px;color:var(--t-3)">Información, no recomendación de inversión</div>
     </div>${data.map(card).join('')}</div>`;
+}
+
+// ═══ Vista visual (24 nov 2026): paneles de Hoy y pestaña Operaciones ═══
+// Solo presentación sobre datos reales (blocks, expenseData, orbit_notes, /api/market). Si falta un dato se dice;
+// nunca se rellena. Las propuestas de operación las cierra el servidor (/api/radar → api/_lib/ideas.js).
+const OV_SIZE = [500, 1000];   // tamaño de cada operación (reglas del usuario, ver CLAUDE.md)
+const ovN = (x, d = 0) => Number(x).toLocaleString('es-ES', { minimumFractionDigits: d, maximumFractionDigits: d, useGrouping: 'always' });
+const ovEur = (x, d = 0) => `${ovN(x, d)} €`;
+const ovPct = (x, d = 1) => `${x > 0 ? '+' : ''}${ovN(x, d)} %`;
+const ovSign = (x) => x > 0 ? 'pos' : x < 0 ? 'neg' : '';
+const ovDate = (s) => s ? new Date(String(s).slice(0, 10) + 'T12:00:00').toLocaleDateString('es-ES', { day: 'numeric', month: 'short' }) : '—';
+const ovColor = (v) => v && v.startsWith('var(') ? getComputedStyle(document.documentElement).getPropertyValue(v.match(/--[\w-]+/)[0]).trim() || '#8A9790' : (v || '#8A9790');
+function ovCache(key, ttlMs) { try { const c = JSON.parse(sessionStorage.getItem(key) || 'null'); if (c && Date.now() - c.t < ttlMs) return c.v; } catch (e) { _silenced('ovCache', e); } return null; }
+function ovCacheSet(key, v) { try { sessionStorage.setItem(key, JSON.stringify({ t: Date.now(), v })); } catch (e) { _silenced('ovCacheSet', e); } }
+const ovLive = () => blocks.filter(b => b && !b.deleted);
+
+// ── Hoy ─────────────────────────────────────────────────────────────────
+function renderDashPanels() {
+  return `<div class="ov-grid">
+    ${ovStocksCard()}${ovAllocCard()}${ovPECard()}${ovCashCard()}
+  </div>
+  <div class="ov-grid ov-grid-2">${ovSpendCard()}<div class="ov-card" id="ov-trade-mini"><div class="ov-hd"><span>Operaciones</span></div><div class="ov-empty">Cargando propuestas…</div></div></div>`;
+}
+function afterDashPanels() {
+  ovLoadDayChanges().catch(e => _silenced('ovLoadDayChanges', e));
+  ovLoadTradeMini().catch(e => _silenced('ovLoadTradeMini', e));
+}
+
+function ovPositions() {
+  const out = [];
+  ovLive().filter(b => b.type === 'bolsa').forEach(b => ((b.extra && b.extra.positions) || []).forEach(p => {
+    const v = +p.value || 0; if (v <= 0) return;
+    const pnl = (p.entry > 0 && p.lastPrice > 0) ? (p.lastPrice / p.entry - 1) * 100 : null;
+    out.push({ bid: b.id, name: p.name || p.ticker || '—', ticker: (p.ticker || '').toUpperCase(), value: v, pnl, robo: !!p.isRoboAdvisor,
+      equity: String(p.type || '').toUpperCase() === 'EQUITY', stale: !!p.price_stale, date: p.price_date || null, ccy: p.priceCurrency || p.currency || 'EUR',
+      last: p.lastPrice || null, err: p.price_error || null });
+  }));
+  return out.sort((a, b) => b.value - a.value);
+}
+function ovStocksCard() {
+  const ps = ovPositions();
+  if (!ps.length) return `<div class="ov-card" onclick="goto('patrimonio')"><div class="ov-hd"><span>Tu bolsa hoy</span></div><div class="ov-empty">No tienes posiciones de bolsa con valor. Añádelas en Cartera.</div></div>`;
+  const tot = ps.reduce((s, p) => s + p.value, 0);
+  const rows = ps.slice(0, 8).map(p => {
+    const w = p.value / tot * 100;
+    const chips = [
+      p.equity && !p.stale ? `<span class="ov-chip" id="ov-d-${escH(p.ticker)}">Hoy …</span>` : '',
+      p.pnl != null ? `<span class="ov-chip ${ovSign(p.pnl)}" title="Desde tu precio de compra, en ${escH(p.ccy)}">${ovPct(p.pnl)} desde compra</span>` : '',
+      p.stale ? `<span class="ov-chip warn" title="${escH(p.err || 'Sin precio reciente')}">Precio ${p.date ? 'del ' + ovDate(p.date) : 'sin actualizar'}</span>` : '',
+    ].join('');
+    return `<div class="ov-row" onclick="event.stopPropagation();gotoBlock('${p.bid}')">
+      <div class="ov-row-top"><div class="ov-name">${escH(p.name)}${p.ticker ? ` <small>${escH(p.ticker)}</small>` : ''}</div><div class="ov-val">${fE(p.value)}</div></div>
+      <div class="ov-bar"><i style="width:${w.toFixed(1)}%"></i></div>
+      <div class="ov-chips">${chips}<span class="ov-chip mute">${ovN(w, 1)} % de la bolsa</span></div>
+    </div>`;
+  }).join('');
+  return `<div class="ov-card" onclick="goto('patrimonio')"><div class="ov-hd"><span>Tu bolsa hoy</span><b>${fE(tot)}</b></div>${rows}
+    ${ps.length > 8 ? `<div class="ov-foot">y ${ps.length - 8} más</div>` : ''}</div>`;
+}
+// Variación del día de las acciones (Twelve Data vía /api/market). Caché de 5 minutos por sesión.
+async function ovLoadDayChanges() {
+  const tks = [...new Set(ovPositions().filter(p => p.equity && !p.stale && p.ticker).map(p => p.ticker))].slice(0, 6);
+  for (const tk of tks) {
+    const el = $('ov-d-' + tk); if (!el) continue;
+    let q = ovCache('ov_q_' + tk, 5 * 60e3);
+    if (!q) {
+      try {
+        const r = await fetch(`${TD_BASE}/quote?symbol=${encodeURIComponent(tk)}`);
+        const d = await r.json();
+        if (!r.ok || d.status === 'error' || d.percent_change == null) throw new Error(d.message || d.error || 'HTTP ' + r.status);
+        q = { pct: +d.percent_change, date: String(d.datetime || '').slice(0, 10) }; ovCacheSet('ov_q_' + tk, q);
+      } catch (e) { console.error('[Hoy] variación del día', tk, e); el.className = 'ov-chip warn'; el.textContent = 'Hoy: sin dato'; el.title = String(e.message || e); continue; }
+    }
+    const cur = $('ov-d-' + tk); if (!cur) continue;
+    cur.className = 'ov-chip ' + ovSign(q.pct); cur.textContent = `${ovPct(q.pct, 2)} ${q.date ? '(' + ovDate(q.date) + ')' : 'hoy'}`;
+    cur.title = 'Variación de la última sesión · Twelve Data';
+  }
+}
+
+function ovDonut(segs, total, size = 156) {
+  const r = 52, C = 2 * Math.PI * r; let acc = 0;
+  const arcs = segs.map(s => { const len = s.v / total * C; const a = `<circle cx="66" cy="66" r="${r}" fill="none" stroke="${s.color}" stroke-width="16" stroke-dasharray="${Math.max(0, len - 2).toFixed(2)} ${C.toFixed(2)}" stroke-dashoffset="${(-acc).toFixed(2)}" transform="rotate(-90 66 66)"><title>${escH(s.label)}: ${ovEur(s.v)}</title></circle>`; acc += len; return a; }).join('');
+  return `<svg viewBox="0 0 132 132" width="${size}" height="${size}" class="ov-donut"><circle cx="66" cy="66" r="${r}" fill="none" stroke="var(--surf-3)" stroke-width="16"/>${arcs}</svg>`;
+}
+function ovAllocCard() {
+  const by = {}; ovLive().forEach(b => { by[b.type] = (by[b.type] || 0) + (b.eur_value || b.value || 0); });
+  const segs = Object.entries(by).filter(([, v]) => v > 0).map(([k, v]) => ({ k, v, label: (BT[k] || BT.otros).label, color: ovColor((BT[k] || BT.otros).color) })).sort((a, b) => b.v - a.v);
+  const tot = segs.reduce((s, x) => s + x.v, 0);
+  if (!tot) return `<div class="ov-card"><div class="ov-hd"><span>Tu patrimonio</span></div><div class="ov-empty">Sin activos todavía.</div></div>`;
+  return `<div class="ov-card" onclick="goto('patrimonio')"><div class="ov-hd"><span>Tu patrimonio</span><b>${fE(tot)}</b></div>
+    <div class="ov-alloc">${ovDonut(segs, tot)}<div class="ov-leg">${segs.map(s => `<div><i style="background:${s.color}"></i><span>${escH(s.label)}</span><b>${ovN(s.v / tot * 100, 0)} %</b><em>${fE(s.v)}</em></div>`).join('')}</div></div></div>`;
+}
+function ovPECard() {
+  const pes = ovLive().filter(b => b.type === 'pe');
+  if (!pes.length) return `<div class="ov-card"><div class="ov-hd"><span>Private equity</span></div><div class="ov-empty">No tienes fondos de private equity.</div></div>`;
+  const rows = pes.map(b => {
+    const x = b.extra || {}, com = +x.committed || 0, cal = +x.called || 0, dis = +x.distributed || 0, val = b.eur_value || b.value || 0;
+    const tvpi = cal > 0 ? (dis + val) / cal : null, pend = Math.max(0, com - cal);
+    return `<div class="ov-row" onclick="event.stopPropagation();gotoBlock('${b.id}')">
+      <div class="ov-row-top"><div class="ov-name">${escH(b.name)}</div><div class="ov-val">${tvpi != null ? `${ovN(tvpi, 2)}x <small>TVPI</small>` : '—'}</div></div>
+      ${com > 0 ? `<div class="ov-bar pe"><i style="width:${Math.min(100, cal / com * 100).toFixed(1)}%"></i></div>
+      <div class="ov-kv"><span>Desembolsado <b>${fE(cal)}</b> de ${fE(com)}</span><span>Pendiente <b>${fE(pend)}</b></span><span>Valor <b>${fE(val)}</b></span>${dis ? `<span>Distribuido <b>${fE(dis)}</b></span>` : ''}</div>`
+      : `<div class="ov-kv"><span>Valor <b>${fE(val)}</b></span><span class="warn">Falta el compromiso</span></div>`}
+    </div>`;
+  }).join('');
+  return `<div class="ov-card"><div class="ov-hd"><span>Private equity</span></div>${rows}</div>`;
+}
+function ovCashCard() {
+  const cs = ovLive().filter(b => b.type === 'cash').map(b => ({ b, v: b.eur_value || b.value || 0 })).sort((a, c) => c.v - a.v);
+  if (!cs.length) return `<div class="ov-card"><div class="ov-hd"><span>Efectivo</span></div><div class="ov-empty">No tienes cuentas de efectivo. Añade una para que los gastos muevan el saldo.</div></div>`;
+  const tot = cs.reduce((s, x) => s + x.v, 0), max = Math.max(...cs.map(x => x.v), 1);
+  return `<div class="ov-card" onclick="goto('tactical')"><div class="ov-hd"><span>Efectivo</span><b>${fE(tot)}</b></div>
+    ${cs.map(({ b, v }) => `<div class="ov-row" onclick="event.stopPropagation();gotoBlock('${b.id}')"><div class="ov-row-top"><div class="ov-name">${escH(b.name)}</div><div class="ov-val">${fE(v)}</div></div>
+      <div class="ov-bar cash"><i style="width:${(v / max * 100).toFixed(1)}%"></i></div>${b.updated_at ? `<div class="ov-sub">Actualizado ${ovDate(b.updated_at)}</div>` : ''}</div>`).join('')}</div>`;
+}
+function ovSpendCard() {
+  const MES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
+  const now = new Date(), mi = now.getMonth(), ym = now.getFullYear() + '-' + String(mi + 1).padStart(2, '0');
+  const ed = (typeof expenseData === 'object' && expenseData) || {};
+  let key = null; try { key = expMonthKeyFor(ed, now.getFullYear(), mi); } catch (e) { _silenced('ovSpendCard', e); }
+  const items = key ? ((ed[key].items) || []).filter(i => !i.isIncome && (!/^\d{4}-\d{2}-\d{2}$/.test(String(i.date || '')) || String(i.date).startsWith(ym))) : [];
+  let budgets = {}; try { budgets = loadBudgets() || {}; } catch (e) { _silenced('ovSpendCard', e); }
+  const by = {}; items.forEach(i => { const c = i.category || 'Sin categoría'; by[c] = (by[c] || 0) + (+i.amount || 0); });
+  const cats = Object.entries(by).sort((a, b) => b[1] - a[1]);
+  const total = cats.reduce((s, [, v]) => s + v, 0);
+  if (!cats.length) return `<div class="ov-card" onclick="goto('flujos')"><div class="ov-hd"><span>Gastos de ${MES[mi]}</span></div><div class="ov-empty">Aún no hay gastos apuntados este mes.</div></div>`;
+  const max = Math.max(...cats.map(([c, v]) => Math.max(v, +budgets[c] || 0)), 1);
+  return `<div class="ov-card" onclick="goto('flujos')"><div class="ov-hd"><span>Gastos de ${MES[mi]}</span><b>${fE(total)}</b></div>
+    ${cats.slice(0, 6).map(([c, v]) => { const lim = +budgets[c] || 0, over = lim && v > lim;
+      return `<div class="ov-row"><div class="ov-row-top"><div class="ov-name">${escH(c)}</div><div class="ov-val ${over ? 'neg' : ''}">${fE(v)}${lim ? ` <small>de ${fE(lim)}</small>` : ''}</div></div>
+      <div class="ov-bar spend ${over ? 'over' : ''}"><i style="width:${(v / max * 100).toFixed(1)}%"></i>${lim ? `<b style="left:${(lim / max * 100).toFixed(1)}%" title="Tu límite"></b>` : ''}</div></div>`; }).join('')}
+    ${cats.length > 6 ? `<div class="ov-foot">${cats.length - 6} categorías más · ${items.length} movimientos</div>` : ''}</div>`;
+}
+
+// ── Propuestas de operación (orbit_notes, kind = 'idea') ─────────────────
+async function ovFetchIdeas() {
+  const { data, error } = await sb.from('orbit_notes')
+    .select('id,ticker,title,summary,doc_url,sources,direction,horizon,entry_price,target_price,stop_price,currency,expires_on,status,result_pct,result_eur,size_eur,executed,price_symbol,entry_date,last_price,last_price_date,exit_price,closed_on,reviewed_at,created_at')
+    .eq('kind', 'idea').order('created_at', { ascending: false }).limit(200);
+  if (error) throw new Error(error.message);
+  return data || [];
+}
+function ovScore(ideas) {
+  const c = ideas.filter(i => i.status && i.status !== 'abierta' && i.result_pct != null);
+  const wins = c.filter(i => +i.result_pct > 0).length;
+  return { open: ideas.filter(i => i.status === 'abierta').length, closed: c.length, wins, hit: c.length ? Math.round(wins / c.length * 100) : null,
+    eur: c.reduce((s, i) => s + (i.result_eur != null ? +i.result_eur : 0), 0) };
+}
+const OV_STATUS = { abierta: ['Abierta', ''], objetivo: ['Objetivo', 'pos'], stop: ['Salida', 'neg'], caducada: ['Caducada', 'mute'], cerrada: ['Cerrada', 'mute'] };
+function ovRR(i) {
+  const e = +i.entry_price, t = +i.target_price, s = +i.stop_price; if (!(e && t && s)) return null;
+  const up = i.direction !== 'bajista'; const gain = up ? t - e : e - t, risk = up ? e - s : s - e;
+  return risk > 0 ? gain / risk : null;
+}
+// Barra salida — entrada — objetivo con el precio actual (o el de cierre) marcado
+function ovRange(i) {
+  const e = +i.entry_price, t = +i.target_price, s = +i.stop_price, cur = i.status === 'abierta' ? (i.last_price != null ? +i.last_price : null) : (i.exit_price != null ? +i.exit_price : null);
+  if (!(e && t && s)) return '';
+  const lo = Math.min(s, t, cur ?? e), hi = Math.max(s, t, cur ?? e), pad = (hi - lo) * 0.06 || 1, a = lo - pad, z = hi + pad;
+  const pos = (v) => ((v - a) / (z - a) * 100).toFixed(2);
+  const up = i.direction !== 'bajista', ccy = escH(i.currency || '');
+  return `<div class="ov-range ${up ? '' : 'down'}">
+    <div class="ov-range-track"><i class="loss" style="left:${pos(Math.min(s, e))}%;width:${(pos(Math.max(s, e)) - pos(Math.min(s, e))).toFixed(2)}%"></i><i class="gain" style="left:${pos(Math.min(t, e))}%;width:${(pos(Math.max(t, e)) - pos(Math.min(t, e))).toFixed(2)}%"></i>
+      <b class="tick entry" style="left:${pos(e)}%"></b>${cur != null ? `<b class="now ${ovSign(up ? cur - e : e - cur)}" style="left:${pos(cur)}%" title="${i.status === 'abierta' ? 'Ahora' : 'Cierre'}: ${ovN(cur, 2)} ${ccy}"></b>` : ''}</div>
+    <div class="ov-range-lbl"><span style="left:${pos(s)}%">Salida<br><b>${ovN(s, 2)}</b></span><span style="left:${pos(e)}%">Entrada<br><b>${ovN(e, 2)}</b></span><span style="left:${pos(t)}%">Objetivo<br><b>${ovN(t, 2)}</b></span></div>
+  </div>`;
+}
+async function ovLoadTradeMini() {
+  const box = $('ov-trade-mini'); if (!box) return;
+  const hd = `<div class="ov-hd"><span>Operaciones</span><button class="btn btn-soft btn-sm" onclick="event.stopPropagation();goto('trading')">Ver todo</button></div>`;
+  if (demo || !sb || !user) { box.innerHTML = hd + `<div class="ov-empty">Inicia sesión para ver tus propuestas.</div>`; return; }
+  let ideas; try { ideas = await ovFetchIdeas(); } catch (e) { box.innerHTML = hd + `<div class="ov-empty neg">No se pudieron cargar las propuestas: ${escH(e.message)}</div>`; return; }
+  box.onclick = () => goto('trading');
+  if (!ideas.length) { box.innerHTML = hd + `<div class="ov-empty">Todavía no hay propuestas. La revisión de los lunes propone de 0 a 3, solo si son muy claras.</div>`; return; }
+  const sc = ovScore(ideas);
+  box.innerHTML = hd + `<div class="ov-kpis">
+      <div><span>Abiertas</span><b>${sc.open}</b></div>
+      <div><span>Acierto</span><b>${sc.hit == null ? '—' : sc.hit + ' %'}</b><em>${sc.closed} cerradas</em></div>
+      <div><span>Si las hubieras hecho</span><b class="${ovSign(sc.eur)}">${sc.closed ? (sc.eur > 0 ? '+' : '') + ovEur(sc.eur, 2) : '—'}</b></div></div>
+    ${ideas.filter(i => i.status === 'abierta').slice(0, 2).map(i => `<div class="ov-row"><div class="ov-row-top"><div class="ov-name">${escH(i.ticker || '')} <small>${escH(i.title)}</small></div><div class="ov-val ${ovSign(+i.result_pct || 0)}">${i.result_pct != null ? ovPct(+i.result_pct) : 'sin precio aún'}</div></div>${ovRange(i)}</div>`).join('')}`;
+}
+
+window.renderTrading = async function renderTrading() {
+  const box = $('trading-content'); if (!box) return;
+  if (demo || !sb || !user) { box.innerHTML = `<div class="ov-card"><div class="ov-empty">Inicia sesión para ver tus propuestas de operación.</div></div>`; return; }
+  box.innerHTML = `<div class="ov-card"><div class="ov-empty">Cargando propuestas…</div></div>`;
+  let ideas; try { ideas = await ovFetchIdeas(); } catch (e) { box.innerHTML = `<div class="ov-card"><div class="ov-empty neg">No se pudieron cargar las propuestas: ${escH(e.message)}</div></div>`; return; }
+  const sc = ovScore(ideas);
+  const kpi = (l, v, s, cls = '') => `<div class="ov-tile"><span>${l}</span><b class="${cls}">${v}</b><em>${s}</em></div>`;
+  const closed = ideas.filter(i => i.status !== 'abierta' && i.closed_on && i.result_eur != null).sort((a, b) => String(a.closed_on).localeCompare(String(b.closed_on)));
+  box.innerHTML = `
+    <div class="ov-tiles">
+      ${kpi('Propuestas', ideas.length, `${sc.open} abierta${sc.open === 1 ? '' : 's'} · ${sc.closed} cerrada${sc.closed === 1 ? '' : 's'}`)}
+      ${kpi('Acierto', sc.hit == null ? '—' : sc.hit + ' %', sc.closed ? `${sc.wins} de ${sc.closed} con ganancia` : 'todavía ninguna cerrada')}
+      ${kpi('Si las hubieras hecho todas', sc.closed ? (sc.eur > 0 ? '+' : '') + ovEur(sc.eur, 2) : '—', 'con su tamaño y 2 € de comisiones', ovSign(sc.eur))}
+      ${kpi('Tus reglas', `${ovN(OV_SIZE[0])}–${ovN(OV_SIZE[1])} €`, 'por operación · una a la vez · salida fijada')}
+    </div>
+    <div class="ov-card"><div class="ov-hd"><span>Cómo habría ido, propuesta a propuesta</span><em>Resultado acumulado en €</em></div><div id="ov-curve"></div></div>
+    <div class="ov-sec">Abiertas</div>
+    ${ideas.filter(i => i.status === 'abierta').map(ovIdeaCard).join('') || `<div class="ov-card"><div class="ov-empty">No hay propuestas abiertas.</div></div>`}
+    <div class="ov-sec">Historial</div>
+    ${ideas.filter(i => i.status !== 'abierta').map(ovIdeaCard).join('') || `<div class="ov-card"><div class="ov-empty">Todavía no se ha cerrado ninguna. Se cierran solas al tocar el objetivo o la salida, o al caducar, y te llega un aviso por WhatsApp.</div></div>`}
+    <div class="ov-note">Las propuestas son información, no recomendaciones de inversión. Se siguen todas, las ejecutes o no, con los precios diarios de Twelve Data; si un día toca el objetivo y la salida, cuenta la salida. El porcentaje es en la moneda del activo, sin efecto divisa.</div>`;
+  const cv = $('ov-curve'); if (cv) cv.innerHTML = ovCurve(closed, cv.clientWidth);
+  ideas.slice(0, 8).forEach((i, n) => setTimeout(() => ovLoadIdeaChart(i).catch(e => _silenced('ovLoadIdeaChart', e)), n * 400));
+};
+
+function ovCurve(closed, width) {
+  if (!closed.length) return `<div class="ov-empty">La curva aparece con la primera propuesta cerrada.</div>`;
+  let acc = 0; const pts = [{ d: 'inicio', v: 0 }, ...closed.map(i => ({ d: i.closed_on, v: (acc += +i.result_eur), i }))];
+  const W = Math.max(280, Math.round(width || 640)), H = 170, P = 26, vs = pts.map(p => p.v), lo = Math.min(0, ...vs), hi = Math.max(0, ...vs), rng = (hi - lo) || 1;
+  const x = (k) => P + k / (pts.length - 1) * (W - 2 * P), y = (v) => H - P - (v - lo) / rng * (H - 2 * P);
+  const path = pts.map((p, k) => `${k ? 'L' : 'M'}${x(k).toFixed(1)} ${y(p.v).toFixed(1)}`).join(' ');
+  const last = pts[pts.length - 1].v, col = last >= 0 ? 'var(--pos)' : 'var(--neg)';
+  return `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" class="ov-curve">
+    <line x1="${P}" x2="${W - P}" y1="${y(0)}" y2="${y(0)}" stroke="var(--line-strong)" stroke-dasharray="4 4"/>
+    <path d="${path} L${x(pts.length - 1)} ${y(0)} L${x(0)} ${y(0)}Z" fill="${col}" opacity=".10"/>
+    <path d="${path}" fill="none" stroke="${col}" stroke-width="2.5" stroke-linejoin="round"/>
+    ${pts.slice(1).map((p, k) => `<circle cx="${x(k + 1)}" cy="${y(p.v)}" r="5" fill="${+p.i.result_eur >= 0 ? 'var(--pos)' : 'var(--neg)'}" stroke="#fff" stroke-width="2"><title>${escH(p.i.ticker || '')} · ${ovDate(p.d)} · ${ovPct(+p.i.result_pct)} · ${(+p.i.result_eur > 0 ? '+' : '') + ovEur(+p.i.result_eur, 2)}</title></circle>`).join('')}
+    <text x="${W - P}" y="${Math.max(14, y(last) - 10)}" text-anchor="end" class="ov-curve-lbl" fill="${col}">${(last > 0 ? '+' : '') + ovEur(last, 2)}</text>
+  </svg>`;
+}
+
+function ovIdeaCard(i) {
+  const [stL, stC] = OV_STATUS[i.status] || [i.status || '—', 'mute'];
+  const rr = ovRR(i), open = i.status === 'abierta';
+  const res = i.result_pct != null ? `<b class="${ovSign(+i.result_pct)}">${ovPct(+i.result_pct)}</b>${i.result_eur != null ? ` <span class="${ovSign(+i.result_eur)}">${(+i.result_eur > 0 ? '+' : '') + ovEur(+i.result_eur, 2)}</span>` : ''}` : '<span class="mute">sin precio aún</span>';
+  const url = safeUrl(i.doc_url);
+  return `<div class="ov-card ov-idea">
+    <div class="ov-idea-hd">
+      <div><div class="ov-idea-tk">${escH(i.ticker || '—')} <span class="ov-chip ${stC}">${stL}</span> <span class="ov-chip mute">${i.executed ? 'Ejecutada' : 'Propuesta'}</span> <span class="ov-chip mute">${i.direction === 'bajista' ? 'Bajista' : 'Alcista'}</span></div>
+        <div class="ov-idea-ti">${escH(i.title)}</div></div>
+      <div class="ov-idea-res"><span>${open ? 'Ahora' : 'Resultado'}</span>${res}</div>
+    </div>
+    ${ovRange(i)}
+    <div class="ov-chart" id="ov-ch-${escH(i.id)}">${i.price_symbol ? '<div class="ov-empty">Cargando precio…</div>' : '<div class="ov-empty warn">Sin símbolo de precio: esta propuesta no se puede seguir.</div>'}</div>
+    <div class="ov-kv">
+      <span>Propuesta <b>${ovDate(i.entry_date || i.created_at)}</b></span>
+      <span>${open ? 'Caduca' : 'Cerrada'} <b>${ovDate(open ? i.expires_on : i.closed_on)}</b></span>
+      ${rr != null ? `<span>Beneficio/riesgo <b>${ovN(rr, 1)} a 1</b></span>` : ''}
+      ${i.size_eur ? `<span>Tamaño <b>${ovEur(+i.size_eur)}</b> · en riesgo <b>${ovEur(Math.abs(+i.size_eur * (+i.stop_price / +i.entry_price - 1)) + 2, 0)}</b></span>` : ''}
+      ${open && i.reviewed_at ? `<span>Revisada <b>${ovDate(i.reviewed_at)}</b></span>` : ''}
+    </div>
+    <div class="ov-idea-sum">${escH(i.summary)}</div>
+    ${url ? `<a class="ov-link" href="${url}" target="_blank" rel="noopener">Ver el análisis completo →</a>` : ''}
+  </div>`;
+}
+
+// Gráfico del precio desde unos días antes de la propuesta, con entrada, objetivo y salida
+async function ovLoadIdeaChart(i) {
+  const box = $('ov-ch-' + i.id); if (!box || !i.price_symbol) return;
+  const from = new Date(new Date(String(i.entry_date || i.created_at).slice(0, 10) + 'T12:00:00').getTime() - 10 * 864e5).toISOString().slice(0, 10);
+  const ck = `ov_ts_${i.price_symbol}_${from}`;
+  let bars = ovCache(ck, 3 * 3600e3);
+  if (!bars) {
+    try {
+      const r = await fetch(`${TD_BASE}/time_series?symbol=${encodeURIComponent(i.price_symbol)}&interval=1day&start_date=${from}&outputsize=200`);
+      const d = await r.json();
+      if (!r.ok || d.status === 'error' || !Array.isArray(d.values)) throw new Error(d.message || d.error || 'HTTP ' + r.status);
+      bars = d.values.map(v => ({ d: String(v.datetime).slice(0, 10), c: +v.close })).reverse(); ovCacheSet(ck, bars);
+    } catch (e) { console.error('[Operaciones] precio', i.price_symbol, e); box.innerHTML = `<div class="ov-empty warn">No se pudo cargar el precio de ${escH(i.price_symbol)}: ${escH(String(e.message || e).slice(0, 120))}</div>`; return; }
+  }
+  if (!bars.length) { box.innerHTML = `<div class="ov-empty">Aún no hay sesiones desde la propuesta.</div>`; return; }
+  const e = +i.entry_price, t = +i.target_price, s = +i.stop_price, end = i.status !== 'abierta' && i.closed_on ? i.closed_on : null;
+  const W = Math.max(280, Math.round(box.clientWidth || 640)), H = 150, P = 8, R = 60, vs = [...bars.map(b => b.c), e, t, s], lo = Math.min(...vs), hi = Math.max(...vs), rng = (hi - lo) || 1;
+  const x = (k) => P + k / Math.max(1, bars.length - 1) * (W - P - R), y = (v) => P + (hi - v) / rng * (H - 2 * P);
+  const line = bars.map((b, k) => `${k ? 'L' : 'M'}${x(k).toFixed(1)} ${y(b.c).toFixed(1)}`).join(' ');
+  const ent = Math.max(0, bars.findIndex(b => b.d > String(i.entry_date || i.created_at).slice(0, 10)) - 1);
+  const cl = end ? bars.findIndex(b => b.d >= end) : -1;
+  const hl = (v, cls, lbl) => `<line x1="${P}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}" class="ov-hl ${cls}"/><text x="${W - R + 4}" y="${y(v) + 4}" class="ov-hl-t ${cls}">${lbl}</text>`;
+  const lastC = bars[bars.length - 1];
+  box.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" class="ov-pchart">
+    <rect x="${x(ent)}" y="0" width="${Math.max(0, (cl >= 0 ? x(cl) : W - R) - x(ent))}" height="${H}" fill="var(--surf-2)"/>
+    ${hl(t, 'gain', 'Objetivo')}${hl(e, 'entry', 'Entrada')}${hl(s, 'loss', 'Salida')}
+    <path d="${line}" fill="none" stroke="var(--bosque)" stroke-width="2" stroke-linejoin="round"/>
+    <circle cx="${x(ent)}" cy="${y(bars[ent].c)}" r="4" fill="var(--bosque)"><title>Propuesta: ${ovDate(bars[ent].d)}</title></circle>
+    ${cl >= 0 ? `<circle cx="${x(cl)}" cy="${y(bars[cl].c)}" r="5" fill="${+i.result_pct >= 0 ? 'var(--pos)' : 'var(--neg)'}" stroke="#fff" stroke-width="2"><title>Cierre: ${ovDate(bars[cl].d)}</title></circle>` : ''}
+  </svg><div class="ov-sub">Cierre diario de ${escH(i.price_symbol)} en ${escH(i.currency || '')} · último ${ovN(lastC.c, 2)} (${ovDate(lastC.d)}) · Twelve Data</div>`;
 }
 
 function drawDonut(byType, t, canvasId, legId) {
@@ -15160,47 +15446,12 @@ function renderDashTiles(){
   </div>`;
 }
 
+// Contenedores de avisos de Hoy (completar activo, notificaciones). El reparto del patrimonio vive en ovAllocCard.
 function renderDashBento(){
-  const r = (window._orbitScore && window._orbitScore.pillars) ? window._orbitScore : computeOrbitScore();
-  window._orbitScore = r;
-  const band = orbitScoreBand(r.score);
-  const C = 2*Math.PI*32, off = r.score==null ? C : C*(1-Math.max(0,Math.min(100,r.score))/100);
-  const scoreTxt = r.score==null ? '—' : Math.round(r.score);
-
-  // (Inversiones, colchón y efectivo se muestran ahora en renderDashTiles)
-  // Rentabilidad REAL de las inversiones: valor de mercado vs coste invertido.
-  // NO usa el patrimonio total (que sube con la nómina/aportaciones); solo activos invertidos.
-  const ir = computeInvestmentReturn();
-  let rentLabel='—', rentSub='añade el coste de tus inversiones';
-  if(ir){
-    rentLabel=(ir.pct>=0?'+':'')+ir.pct.toFixed(1)+'%';
-    rentSub='sobre lo invertido';
-  }
-
-  // Colchón real desde el pilar
-  const colP=(r.pillars||[]).find(p=>p.key==='colchon');
-  let colLabel='—', colSub='conecta tus flujos';
-  if(colP && colP.complete){ colLabel=(colP.value||'').replace(' meses',''); colSub='meses de gastos'; }
-
-  // Diversificación real
-  const groups=groupBlocksByType();
-  const liveN=blocks.filter(b=>!b.deleted).length;
-  const tot=groups.reduce((s,[t,bs])=>s+bs.reduce((x,b)=>x+(b.eur_value||b.value||0),0),0);
-  const segs=groups.map(([t,bs])=>{const v=bs.reduce((x,b)=>x+(b.eur_value||b.value||0),0);return{pct:tot>0?v/tot*100:0,cfg:BT[t]||BT.otros};}).filter(s=>s.pct>0.5).sort((a,b)=>b.pct-a.pct);
-  const bar=segs.map(s=>`<div style="flex:${s.pct.toFixed(2)};background:${s.cfg.color}"></div>`).join('');
-  const legend=segs.map(s=>`<span style="font-size:11px;color:var(--t-3)"><span style="display:inline-block;width:7px;height:7px;border-radius:2px;background:${s.cfg.color};margin-right:5px"></span>${s.cfg.label} ${Math.round(s.pct)}%</span>`).join('');
-
   return `
   <div id="complete-asset"></div>
   <div id="push-promo"></div>
-  ${segs.length?`<div class="card" style="padding:15px 16px;margin-bottom:14px">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:11px">
-      <div style="font-size:13px;font-weight:600;color:var(--t-1)">Diversificación</div>
-      <span style="font-size:11px;color:var(--t-4)">${liveN} activo${liveN===1?'':'s'}</span>
-    </div>
-    <div style="display:flex;gap:3px;height:11px;border-radius:6px;overflow:hidden">${bar}</div>
-    <div style="display:flex;flex-wrap:wrap;gap:9px 14px;margin-top:11px">${legend}</div>
-  </div>`:''}`;
+  `;
 }
 
 function renderDashScoreStrip() {
@@ -19320,6 +19571,93 @@ body{font-family:var(--sans);background:var(--bg);color:var(--t-1);-webkit-font-
   .dtile-v{font-size:25px}
 }
 @media (prefers-reduced-motion:reduce){ .dtile{transition:none} }
+
+/* ═══ Vista visual (24 nov 2026): paneles de Hoy y Operaciones ═══ */
+.ov-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;margin:16px 0}
+.ov-card{background:#fff;border:1px solid var(--line);border-radius:22px;padding:18px 20px;box-shadow:var(--sh-sm);cursor:default;min-width:0}
+.ov-card[onclick]{cursor:pointer}
+.ov-card[onclick]:hover{box-shadow:var(--sh-md)}
+.ov-hd{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:10px}
+.ov-hd span{font-size:13px;font-weight:600;color:var(--t-2)}
+.ov-hd b{font-size:20px;font-weight:650;letter-spacing:-.02em;color:var(--t-1)}
+.ov-hd em{font-style:normal;font-size:11px;color:var(--t-4)}
+.ov-row{padding:9px 0;border-top:1px solid var(--line-2)}
+.ov-row:first-of-type{border-top:0}
+.ov-row[onclick]{cursor:pointer}
+.ov-row-top{display:flex;justify-content:space-between;align-items:baseline;gap:10px}
+.ov-name{font-size:13.5px;font-weight:600;color:var(--t-1);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ov-name small,.ov-val small{font-size:11px;font-weight:500;color:var(--t-4)}
+.ov-val{font-size:13.5px;font-weight:600;color:var(--t-1);white-space:nowrap;font-variant-numeric:tabular-nums}
+.ov-sub{font-size:11px;color:var(--t-4);margin-top:4px}
+.ov-bar{position:relative;height:7px;border-radius:5px;background:var(--surf-3);margin-top:7px;overflow:visible}
+.ov-bar i{display:block;height:100%;border-radius:5px;background:var(--bosque)}
+.ov-bar.cash i{background:var(--c-cash)} .ov-bar.pe i{background:var(--c-pe)} .ov-bar.spend i{background:var(--c-fondos)}
+.ov-bar.spend.over i{background:var(--neg)}
+.ov-bar b{position:absolute;top:-3px;width:2px;height:13px;background:var(--t-1);border-radius:1px}
+.ov-chips{display:flex;flex-wrap:wrap;gap:5px;margin-top:7px}
+.ov-chip{display:inline-flex;align-items:center;font-size:11px;font-weight:600;padding:2px 8px;border-radius:999px;background:var(--surf-2);color:var(--t-2);font-variant-numeric:tabular-nums;white-space:nowrap}
+.ov-chip.pos{background:var(--pos-bg);color:var(--pos)} .ov-chip.neg{background:var(--neg-bg);color:var(--neg)}
+.ov-chip.warn{background:var(--warn-bg);color:var(--warn)} .ov-chip.mute{background:var(--surf-2);color:var(--t-4)}
+.pos{color:var(--pos)} .neg{color:var(--neg)} .mute{color:var(--t-4)} .warn{color:var(--warn)}
+.ov-empty{font-size:12.5px;color:var(--t-3);line-height:1.5;padding:6px 0}
+.ov-empty.neg{color:var(--neg)} .ov-empty.warn{color:var(--warn)}
+.ov-foot{font-size:11.5px;color:var(--t-4);margin-top:8px}
+.ov-alloc{display:flex;align-items:center;gap:22px;min-height:170px}
+.ov-donut{flex-shrink:0}
+.ov-leg{flex:1;min-width:0;display:flex;flex-direction:column;gap:7px}
+.ov-leg div{display:grid;grid-template-columns:10px 1fr auto;column-gap:8px;align-items:center;font-size:12.5px}
+.ov-leg i{width:10px;height:10px;border-radius:3px}
+.ov-leg span{color:var(--t-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ov-leg b{font-weight:650;color:var(--t-1)}
+.ov-leg em{grid-column:2/4;font-style:normal;font-size:11px;color:var(--t-4)}
+.ov-kv{display:flex;flex-wrap:wrap;gap:4px 14px;margin-top:8px;font-size:11.5px;color:var(--t-3)}
+.ov-kv b{color:var(--t-1);font-weight:600}
+.ov-kpis{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:6px}
+.ov-kpis div{background:var(--surf-2);border-radius:14px;padding:10px 12px;display:flex;flex-direction:column}
+.ov-kpis span{font-size:11px;color:var(--t-3)} .ov-kpis b{font-size:18px;font-weight:650;color:var(--t-1)} .ov-kpis em{font-style:normal;font-size:10.5px;color:var(--t-4)}
+/* Operaciones */
+.ov-tiles{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;margin-bottom:16px}
+.ov-tile{background:#fff;border:1px solid var(--line);border-radius:20px;padding:16px 18px;display:flex;flex-direction:column;gap:2px}
+.ov-tile span{font-size:12px;color:var(--t-3);font-weight:500} .ov-tile b{font-size:26px;font-weight:650;letter-spacing:-.03em;color:var(--t-1)}
+.ov-tile b.pos{color:var(--pos)} .ov-tile b.neg{color:var(--neg)} .ov-tile em{font-style:normal;font-size:11px;color:var(--t-4)}
+.ov-sec{font-size:12px;font-weight:700;color:var(--t-3);text-transform:uppercase;letter-spacing:.06em;margin:22px 4px 10px}
+.ov-curve{display:block;max-width:100%}
+.ov-curve-lbl{font-size:13px;font-weight:700}
+.ov-idea{margin-bottom:14px}
+.ov-idea-hd{display:flex;justify-content:space-between;gap:14px;align-items:flex-start}
+.ov-idea-tk{font-size:15px;font-weight:700;color:var(--t-1);display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.ov-idea-ti{font-size:12.5px;color:var(--t-3);margin-top:3px}
+.ov-idea-res{text-align:right;display:flex;flex-direction:column;align-items:flex-end;white-space:nowrap}
+.ov-idea-res span{font-size:11px;color:var(--t-4)} .ov-idea-res b{font-size:22px;font-weight:700}
+.ov-idea-sum{font-size:12.5px;color:var(--t-2);line-height:1.55;margin-top:10px}
+.ov-link{display:inline-block;margin-top:8px;font-size:12px;font-weight:600;color:var(--gold);text-decoration:none}
+.ov-range{margin:16px 0 6px}
+.ov-range-track{position:relative;height:10px;border-radius:6px;background:var(--surf-3)}
+.ov-range-track i{position:absolute;top:0;height:100%}
+.ov-range-track i.loss{background:var(--neg-bg);border-radius:6px 0 0 6px} .ov-range-track i.gain{background:var(--pos-bg);border-radius:0 6px 6px 0}
+.ov-range.down .ov-range-track i.loss{border-radius:0 6px 6px 0} .ov-range.down .ov-range-track i.gain{border-radius:6px 0 0 6px}
+.ov-range-track b{position:absolute;top:50%;transform:translate(-50%,-50%)}
+.ov-range-track b.entry{width:2px;height:18px;background:var(--t-2);border-radius:1px}
+.ov-range-track b.now{width:16px;height:16px;border-radius:50%;background:var(--t-2);border:3px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.25)}
+.ov-range-track b.now.pos{background:var(--pos)} .ov-range-track b.now.neg{background:var(--neg)}
+.ov-range-lbl{position:relative;height:34px;margin-top:6px;font-size:10.5px;color:var(--t-4)}
+.ov-range-lbl span{position:absolute;transform:translateX(-50%);text-align:center;line-height:1.25;white-space:nowrap}
+.ov-range-lbl span:first-child{transform:none} .ov-range-lbl span:last-child{transform:translateX(-100%)}
+.ov-range.down .ov-range-lbl span:first-child{transform:translateX(-100%)} .ov-range.down .ov-range-lbl span:last-child{transform:none}
+.ov-range-lbl b{color:var(--t-2);font-weight:600;font-variant-numeric:tabular-nums}
+.ov-chart{margin-top:10px}
+.ov-pchart{display:block;max-width:100%}
+.ov-hl{stroke-width:1.2;stroke-dasharray:5 4} .ov-hl.gain{stroke:var(--pos)} .ov-hl.loss{stroke:var(--neg)} .ov-hl.entry{stroke:var(--t-4)}
+.ov-hl-t{font-size:10px;font-weight:600} .ov-hl-t.gain{fill:var(--pos)} .ov-hl-t.loss{fill:var(--neg)} .ov-hl-t.entry{fill:var(--t-3)}
+.ov-note{font-size:11.5px;color:var(--t-4);line-height:1.55;margin:18px 4px 30px}
+@media (max-width:860px){
+  .ov-grid{grid-template-columns:1fr;gap:12px;margin:12px 0}
+  .ov-tiles{grid-template-columns:1fr 1fr;gap:10px}
+  .ov-tile b{font-size:21px}
+  .ov-card{border-radius:18px;padding:15px 16px}
+  .ov-kpis b{font-size:15px}
+  .ov-idea-res b{font-size:18px}
+}
 </style>
 </body>
 </html>
