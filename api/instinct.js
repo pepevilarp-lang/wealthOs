@@ -174,7 +174,7 @@ async function authenticate(req) {
 function originOf(b) {
   if (via() === 'session') return 'app';
   const src = String((b && b.source) || '').toLowerCase();
-  return src === 'sheet' ? 'sheet' : src === 'siri' ? 'siri' : 'instinct';
+  return src === 'sheet' ? 'sheet' : src === 'siri' ? 'siri' : src === 'applepay' ? 'applepay' : 'instinct';
 }
 const MOV_SOURCE = { app: 'manual', sheet: 'import', instinct: 'instinct' };   // valores admitidos por la tabla movements
 
@@ -1646,6 +1646,53 @@ export async function recordQuickExpense(uid, { amount, category, note, account,
   });
 }
 
+
+// ═══ Pagos con tarjeta: automatización "Transacción" (Wallet) de Atajos de iOS → /api/quick-expense ═══
+// Atajos manda el importe como texto con formato local ("12,50 €", "$10.00", "GBP 8.40") o como número.
+export function parseCardAmount(x) {
+  if (typeof x === 'number') return x > 0 ? { value: Math.round(x * 100) / 100, currency: 'EUR' } : null;
+  const s = String(x == null ? '' : x).trim();
+  if (!s) return null;
+  const iso = s.match(/\b([A-Z]{3})\b/);
+  const currency = iso ? iso[1] : s.includes('$') ? 'USD' : s.includes('£') ? 'GBP' : 'EUR';
+  let num = s.replace(/[^\d.,]/g, '');
+  if (num.lastIndexOf(',') > num.lastIndexOf('.')) num = num.replace(/\./g, '').replace(',', '.');   // 1.234,56
+  else num = num.replace(/,/g, '');                                                                    // 1,234.56
+  const v = parseFloat(num);
+  return isFinite(v) && v > 0 ? { value: Math.round(v * 100) / 100, currency } : null;
+}
+// Categoría que el usuario ya ha dado a ese comercio (la más repetida; "Altres" no cuenta): así aprende de sus correcciones
+const merchantKey = (s) => norm(s).replace(/[^a-z0-9 ]/g, ' ').split(/\s+/).filter(Boolean).slice(0, 3).join(' ');
+export function learnedCategory(data, merchant) {
+  const key = merchantKey(merchant); if (!key) return null;
+  const count = {};
+  for (const m of Object.values(data || {})) for (const it of (m && m.items) || [])
+    if (!it.isIncome && it.category && it.category !== 'Altres' && merchantKey(it.concept) === key) count[it.category] = (count[it.category] || 0) + 1;
+  const best = Object.entries(count).sort((a, b) => b[1] - a[1])[0];
+  return best ? best[0] : null;
+}
+export async function recordCardExpense(uid, { amount, merchant, card, note, category }) {
+  const a = parseCardAmount(amount);
+  if (!a) return { status: 400, body: { ok: false, message: 'El pago llegó sin importe (Wallet a veces lo manda vacío). No he apuntado nada.' } };
+  const shop = txt(merchant || '').trim().slice(0, 60);
+  let eurAmount = a.value, concept = shop || 'Pago con tarjeta';
+  if (a.currency !== 'EUR') {
+    const fx = await fxToEur([a.currency]);                       // tipo del BCE; si no hay, lanza y no se apunta
+    eurAmount = Math.round(a.value * fx[a.currency] * 100) / 100;
+    concept += ` (${a.value.toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${a.currency})`;
+  }
+  if (note) concept += ` · ${txt(note).slice(0, 40)}`;
+  return REQ.run({ via: 'instinct' }, async () => {
+    let cat = category ? resolveCategory(category, shop) : null;
+    if (!cat) { const { data } = await getExpensesV(uid); cat = learnedCategory(data, shop) || resolveCategory(null, shop); }
+    let account;
+    if (card) { const r = findAsset(await getBlocks(uid), card, 'cash'); if (r.b) account = r.b.name; }
+    const minute = new Date().toISOString().slice(0, 16);
+    const id = 'card-' + sha256(`${uid}|${toCents(eurAmount)}|${norm(shop)}|${minute}`).slice(0, 24);
+    const r = await actItem(uid, { id, amount: eurAmount, category: cat, concept, account, source: 'applepay' }, madridToday(), false);
+    return { status: r.status, body: r.body };
+  });
+}
 
 // ═══ Noticias del día: la MISMA selección que "Qué está pasando hoy" de Orbit ════════════════
 // La app guarda su selección diaria en user_kv (clave wealthos_insights_<usuario>_<fecha UTC>). Si a la hora de
