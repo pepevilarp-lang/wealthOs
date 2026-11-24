@@ -351,5 +351,6 @@ Local: `node dev-server.mjs` (ver LOCAL.md).
 - `api/instinct.js`: `computeAlerts` añade los análisis de 7 días (clave `note:<id>`, sin repetir); ruta `GET notes`.
   App: sección "Análisis de Claude" en Hoy (`loadOrbitNotes`). Pruebas: `tests/test-notes.mjs` (5 casos).
 - Tarea programada en la cuenta del usuario (no en el repo): lunes 07:41 Madrid, revisión de cartera, radar de cada acción
-  suelta, 3 ideas y revisión de las ideas anteriores (objetivo / stop / caducada, % de acierto). Escribe en `orbit_notes` y
-  un documento de Claude Docs por semana.
+  suelta, de 0 a 3 propuestas que cumplan las reglas de trading (beneficio/riesgo ≥ 2 a 1, pérdida máxima 8 %, 500–1.000 €)
+  y marcador de las anteriores (las cierra la tarea diaria, no la semanal). Escribe en `orbit_notes` y un documento de
+  Claude Docs por semana.
