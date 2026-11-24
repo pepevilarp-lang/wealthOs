@@ -586,7 +586,31 @@ export async function computeAlerts(uid, today) {
     console.error('[instinct] radar no disponible:', e);   // no se calla: se avisa una vez al día
     out.push({ key: `radar:error:${today}`, level: 'baja', text: `⚠️ No he podido leer el radar de tus acciones (${String(e.message || e).slice(0, 80)}).` });
   }
+  // Análisis de Claude guardados en Orbit (revisión de cartera, radar, tesis, ideas), últimos 7 días
+  try {
+    const notes = await sb(`orbit_notes?select=id,kind,ticker,title,summary,doc_url,created_at&user_id=eq.${uid}&created_at=gte.${addDays(today, -7)}&order=created_at.desc&limit=10`) || [];
+    for (const n of notes) out.push({ key: `note:${n.id}`, level: n.kind === 'idea' ? 'media' : 'baja', kind: n.kind, ticker: n.ticker,
+      text: noteText(n) });
+  } catch (e) {
+    console.error('[instinct] análisis no disponibles:', e);
+    out.push({ key: `note:error:${today}`, level: 'baja', text: `⚠️ No he podido leer los análisis guardados (${String(e.message || e).slice(0, 80)}).` });
+  }
   return out;
+}
+
+const NOTE_ICON = { idea: '💡', cartera: '📊', radar: '🔎', tesis: '🧭', resultados: '🧾', analisis: '🧠' };
+function noteText(n) {
+  return `${NOTE_ICON[n.kind] || '🧠'} ${n.title}\n${n.summary}${n.doc_url ? `\nAnálisis completo: ${n.doc_url}` : ''}`;
+}
+// Análisis guardados por Claude: últimos 30 días + ideas de operación todavía abiertas
+async function actNotes(uid, b, today) {
+  const recent = await sb(`orbit_notes?select=id,kind,ticker,title,summary,doc_url,direction,horizon,entry_price,target_price,stop_price,currency,expires_on,status,result_pct,created_at&user_id=eq.${uid}&created_at=gte.${addDays(today, -30)}&order=created_at.desc&limit=30`) || [];
+  const open = await sb(`orbit_notes?select=id,ticker,title,direction,entry_price,target_price,stop_price,currency,expires_on,status,created_at&user_id=eq.${uid}&kind=eq.idea&status=eq.abierta&order=created_at.desc&limit=20`) || [];
+  const fmt = (x, c) => x == null ? '—' : `${Number(x).toLocaleString('es-ES', { maximumFractionDigits: 2 })} ${c || ''}`.trim();
+  const ideas = open.map(i => `💡 ${i.ticker || ''} ${i.direction || ''} · entrada ${fmt(i.entry_price, i.currency)} · objetivo ${fmt(i.target_price, i.currency)} · salida ${fmt(i.stop_price, i.currency)} · hasta ${i.expires_on || '—'}`);
+  const msg = recent.length ? [...recent.slice(0, 5).map(noteText), ...(ideas.length ? ['Ideas abiertas:', ...ideas] : [])].join('\n\n')
+    : 'Todavía no hay análisis guardados en Orbit.';
+  return ok(msg, { notes: recent, open_ideas: open });
 }
 
 // Radar: lista lo que se cuece en sus acciones (14 días). Con refresh=1 consulta Finnhub en el momento.
@@ -1789,8 +1813,9 @@ async function handleRequest(req, res) {
       if (r0 === 'summary' && method === 'GET') { const s2 = await buildSummary(uid, today); return send(ok(s2.message, s2.data)); }
       if (r0 === 'alerts' && method === 'GET') return send(await actAlerts(uid, body, today));
       if (r0 === 'radar' && method === 'GET') return send(await actRadar(uid, body, today));
+      if (r0 === 'notes' && method === 'GET') return send(await actNotes(uid, body, today));
       if (r0 === 'news' && r1 === 'today' && method === 'GET') return send(await actNewsToday(uid, body));
-      return res.status(404).json({ ok: false, message: `Ruta no encontrada: ${method} /${route}. Rutas: GET month · GET news/today · POST expenses · POST incomes · DELETE expenses/{id} · POST trades · POST trades/{id}/fill · DELETE trades/{id} · POST cash-balance · GET assets · GET positions · GET summary · GET alerts · GET radar.` });
+      return res.status(404).json({ ok: false, message: `Ruta no encontrada: ${method} /${route}. Rutas: GET month · GET news/today · POST expenses · POST incomes · DELETE expenses/{id} · POST trades · POST trades/{id}/fill · DELETE trades/{id} · POST cash-balance · GET assets · GET positions · GET summary · GET alerts · GET radar · GET notes.` });
     }
 
     // Interfaz por acciones (compatibilidad): { action, ... }
@@ -1812,6 +1837,7 @@ async function handleRequest(req, res) {
       summary: async () => { const s2 = await buildSummary(uid, today); return ok(s2.message, s2.data); },
       alerts: () => actAlerts(uid, body, today),
       radar: () => actRadar(uid, body, today),
+      notes: () => actNotes(uid, body, today),
       recent: () => actRecent(uid),
       assets: () => actAssets(uid),
       add_asset: () => actAddAsset(uid, body, today),
@@ -1837,7 +1863,7 @@ async function handleRequest(req, res) {
     if (action === 'undo' || action === 'delete_expense')
       return send(bad('Esta acción ya no existe: para borrar, usa DELETE /expenses/{id} (o action "delete_item" con el id). Los ids salen en GET /month.'));
     if (!map[action]) return send(bad(`Acción desconocida. Usa las rutas REST (GET /month, POST /expenses…) o una de: ${Object.keys(map).join(', ')}.`));
-    const READ = ['summary', 'alerts', 'radar', 'recent', 'assets', 'pe_status', 'positions', 'news', 'news_today', 'month', 'selftest'];
+    const READ = ['summary', 'alerts', 'radar', 'notes', 'recent', 'assets', 'pe_status', 'positions', 'news', 'news_today', 'month', 'selftest'];
     if (method === 'GET' && !READ.includes(action)) return send(bad('Esta acción escribe: usa POST, o GET con _method=POST.'));
     return send(await map[action]());
   } catch (e) {
