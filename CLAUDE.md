@@ -73,13 +73,17 @@ Resuelto (11 nov 2026, rama auditoria-nov-2026):
 `getMockNews()` y `generateMockPortfolioNews()` eliminadas (eran código muerto). Las noticias reales
 salen de `/api/news`. `fetchFinancialNews()` tampoco se usa: candidata a eliminarse.
 
-### 2. Precios
-- Dos caminos: `updateBolsaPricesForBlock()` convierte divisas; `updateBolsaPrices()` no (suma USD
-  como EUR). Dejar una única función.
-- Llamar a precios desde el servidor (`/api/prices` existe y no se usa), no desde el navegador.
-- Resolver cada posición por ISIN una vez y guardar cotización, bolsa y moneda exactas.
-- Cada posición guarda `price`, `currency`, `price_date`, `source`. Si falla, conservar el último
-  precio válido marcado como antiguo; no marcar el bloque como actualizado si alguna posición falló.
+### 2. Precios — resuelto (24 nov 2026)
+- Una sola vía: `/api/prices` (POST, sesión obligatoria) con `api/_lib/quotes.js`. Cada posición se resuelve UNA vez a
+  su símbolo exacto de Yahoo Finance por ISIN (ETF irlandés en EUR → Xetra `.DE`) y se guarda en la posición
+  (`quote_symbol`, `quote_exchange`). Precio, moneda (GBp → GBP), fecha, fuente y `day_change_pct`. Twelve Data solo
+  de respaldo para EE. UU. Si todo falla, se conserva el último precio con `price_stale` y el motivo en `price_error`.
+- Motivo: el plan gratuito de Twelve Data no cubre los ETF de Xetra y limita a 8 consultas/minuto; la cadena anterior
+  en el navegador (Twelve Data → Finnhub → FMP) dejaba los ETF europeos con precio antiguo.
+- La tarea diaria (`/api/radar`, 06:30 UTC) actualiza todas las cuentas de bolsa con `refreshBolsaBlocks` (BCE vía
+  Frankfurter, control de versión por `updated_at`). La app actualiza al abrir. Pruebas: `tests/test-quotes.mjs` (16).
+- Yahoo Finance no tiene API oficial: si cambia, el error aparece en cada posición. Vigilar.
+- Quedan en el código `fetchPrice`/`resolveSymbol` para otros usos (buscador, diagnóstico): candidatos a retirarse.
 
 ### 3. Gastos
 - Los meses se guardan por nombre ("Marzo") sin año y en dos idiomas: los años se mezclan.
@@ -351,7 +355,6 @@ Local: `node dev-server.mjs` (ver LOCAL.md).
 - Pestaña Operaciones (`p-trading`, `renderTrading`): marcador, curva acumulada en €, cada propuesta con barra
   salida–entrada–objetivo y gráfico de cierres diarios (`/time_series`, caché 3 h). Solo lectura de `orbit_notes`.
 - `fE` agrupa los miles también con 4 cifras. Prueba visual: `python3 tests/visual-check.py` (capturas en /tmp/orbit-shots).
-- Pendiente: los ETF europeos no tienen precio automático en el plan gratuito de Twelve Data (se marcan como antiguos).
 
 ## Análisis de Claude en Orbit (24 nov 2026)
 - Petición del usuario: que los análisis de Claude (chat y tarea semanal) lleguen a Orbit y a WhatsApp, incluidas 3 ideas
