@@ -5180,6 +5180,22 @@ async function openQuickConnect(){
       ${box(tok)}
     </div>
 
+    <div style="background:var(--crema);border:1px solid var(--crema-2);border-radius:12px;padding:15px;margin-bottom:16px">
+      <div style="font-size:13px;font-weight:600;color:var(--t-1);margin-bottom:4px"><i class="ti ti-device-mobile" style="vertical-align:-2px;margin-right:5px"></i>Automático al pagar con Apple Pay</div>
+      <div style="font-size:12px;color:var(--t-2);line-height:1.6">Cada pago con Apple Pay se apunta solo: la categoría sale de lo que ya pusiste antes en ese comercio (aprende de tus correcciones) y el saldo se descuenta de la cuenta de esa tarjeta. Solo pagos en tienda con Apple Pay; las compras online y las transferencias no pasan por aquí.</div>
+      <ol style="font-size:12px;color:var(--t-2);line-height:1.65;margin:10px 0 8px;padding-left:18px">
+        <li>Atajos → <b>Automatización</b> → <b>+</b> → <b>Wallet</b> (en iOS 17–18: <b>Transacción</b>). Elige tus tarjetas, deja todas las categorías y marca <b>Ejecutar inmediatamente</b>.</li>
+        <li>Acción <b>Obtener contenido de URL</b>: la URL de abajo, método <b>POST</b>, cuerpo <b>JSON</b> con 4 campos: <code>token</code> (texto, tu token), <code>amount</code> = Entrada del atajo → <b>Importe</b>, <code>merchant</code> = Entrada del atajo → <b>Comercio</b>, <code>card</code> = Entrada del atajo → <b>Tarjeta</b>.</li>
+        <li>Opcional: acción <b>Mostrar notificación</b> con el resultado, para ver "✓ Gasto apuntado…" al pagar.</li>
+        <li>Si falla a veces: Ajustes → Notificaciones → Wallet → desactiva el resumen de notificaciones, y deja activados los datos móviles para Wallet.</li>
+      </ol>
+      <div class="field-l">URL</div>
+      ${box(url)}
+      <div class="field-l" style="margin-top:8px">Tu token</div>
+      ${box(tok)}
+      <div style="font-size:11.5px;color:var(--t-3);line-height:1.5;margin-top:8px">Para que la tarjeta descuente de la cuenta correcta, el nombre de la tarjeta en Wallet debe contener el nombre de tu cuenta de efectivo en Orbit (p. ej. una palabra en común). Si no encaja, el gasto se apunta igual pero sin mover saldo, y te lo dice.</div>
+    </div>
+
     <details style="margin-top:4px">
       <summary style="font-size:12px;color:var(--t-3);cursor:pointer">Prefiero montar el atajo a mano</summary>
       <div style="font-size:11.5px;color:var(--t-4);line-height:1.6;margin-top:10px">
