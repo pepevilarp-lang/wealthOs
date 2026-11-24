@@ -342,6 +342,17 @@ Local: `node dev-server.mjs` (ver LOCAL.md).
   antes de la fecha límite; 2 € de comisiones), `trackIdeas` (lo llama `/api/radar` cada día) y `scoreboard`.
 - Se sigue toda propuesta, ejecutada o no: el marcador muestra qué hubiera pasado. Pruebas: `tests/test-ideas.mjs` (13).
 
+## Hoy visual y pestaña Operaciones (24 nov 2026)
+- Petición del usuario: Orbit muy visual y claro: sus acciones hoy, la cartera, PE, efectivo, gastos, noticias que le
+  afectan y una parte de operaciones a corto plazo con el historial de propuestas y cómo habrían ido.
+- Hoy (`renderDashPanels`, prefijo `ov`): bolsa con variación del día (Twelve Data `/quote`, caché 5 min) y desde compra,
+  patrimonio en gráfico circular SVG, PE (desembolsado/pendiente/TVPI de la posición), efectivo por cuenta, gastos del mes
+  por categoría frente a límites y resumen de operaciones. Sin dato → se dice (precio sin actualizar, falta compromiso).
+- Pestaña Operaciones (`p-trading`, `renderTrading`): marcador, curva acumulada en €, cada propuesta con barra
+  salida–entrada–objetivo y gráfico de cierres diarios (`/time_series`, caché 3 h). Solo lectura de `orbit_notes`.
+- `fE` agrupa los miles también con 4 cifras. Prueba visual: `python3 tests/visual-check.py` (capturas en /tmp/orbit-shots).
+- Pendiente: los ETF europeos no tienen precio automático en el plan gratuito de Twelve Data (se marcan como antiguos).
+
 ## Análisis de Claude en Orbit (24 nov 2026)
 - Petición del usuario: que los análisis de Claude (chat y tarea semanal) lleguen a Orbit y a WhatsApp, incluidas 3 ideas
   de operación de 1 semana a 3 meses con seguimiento de resultados.
