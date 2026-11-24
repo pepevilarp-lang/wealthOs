@@ -16,6 +16,7 @@
 
 import crypto from 'crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { stockTickers, scanTickers, persistEvents, addDays } from './_lib/radar.js';
 
 const SB_URL = process.env.SUPABASE_URL;
 const SERVICE = process.env.SUPABASE_SERVICE_ROLE;
@@ -577,7 +578,34 @@ export async function computeAlerts(uid, today) {
         out.push({ key: `goal:${g.id || g.name}:${ym}`, level: 'media', text: `🎯 "${g.name}": este mes llevas ${eur(p.thisMonth)} de ${eur(p.needMonthly)} necesarios. Te faltan ${eur(p.needMonthly - p.thisMonth)}.` });
     }
   }
+  // Radar: lo que se cuece en sus acciones (tarea diaria /api/radar), últimos 7 días
+  try {
+    const radar = await sb(`radar_events?select=key,level,text,url,ticker,kind,event_date&user_id=eq.${uid}&event_date=gte.${addDays(today, -7)}&order=event_date.desc&limit=20`) || [];
+    for (const e of radar) out.push({ key: `radar:${e.key}`, level: e.level || 'baja', text: e.url ? `${e.text} ${e.url}` : e.text, ticker: e.ticker, kind: e.kind });
+  } catch (e) {
+    console.error('[instinct] radar no disponible:', e);   // no se calla: se avisa una vez al día
+    out.push({ key: `radar:error:${today}`, level: 'baja', text: `⚠️ No he podido leer el radar de tus acciones (${String(e.message || e).slice(0, 80)}).` });
+  }
   return out;
+}
+
+// Radar: lista lo que se cuece en sus acciones (14 días). Con refresh=1 consulta Finnhub en el momento.
+async function actRadar(uid, b, today) {
+  let scanned = null;
+  if (b.refresh === true || b.refresh === 1 || b.refresh === '1' || b.refresh === 'true') {
+    const key = process.env.FINNHUB_KEY;
+    if (!key) return bad('Falta FINNHUB_KEY en Vercel: el radar no puede consultar datos.');
+    const tks = stockTickers(await getBlocks(uid));
+    if (!tks.length) return ok('No tienes acciones sueltas en Orbit: el radar solo vigila acciones, no ETF.', { events: [], tickers: [] });
+    const { byTicker, errors } = await scanTickers(tks, { key, today });
+    const ev = tks.flatMap(tk => byTicker[tk] || []);
+    await persistEvents(uid, ev, { SU: SB_URL, SR: process.env.SUPABASE_SERVICE_ROLE });
+    scanned = { tickers: tks, found: ev.length, source_errors: errors.slice(0, 10) };
+  }
+  const rows = await sb(`radar_events?select=key,ticker,kind,level,text,url,event_date&user_id=eq.${uid}&event_date=gte.${addDays(today, -14)}&order=event_date.desc&limit=30`) || [];
+  const msg = rows.length ? rows.map(e => e.url ? `${e.text} ${e.url}` : e.text).join('\n')
+    : 'Nada relevante en tus acciones en los últimos 14 días.';
+  return ok(scanned && scanned.source_errors.length ? `${msg}\n(Algunas fuentes no respondieron: ${scanned.source_errors.length}.)` : msg, { events: rows, scanned });
 }
 
 async function actAlerts(uid, b, today) {
@@ -1760,8 +1788,9 @@ async function handleRequest(req, res) {
       if (r0 === 'positions' && method === 'GET') return send(await actPositions(uid, body));
       if (r0 === 'summary' && method === 'GET') { const s2 = await buildSummary(uid, today); return send(ok(s2.message, s2.data)); }
       if (r0 === 'alerts' && method === 'GET') return send(await actAlerts(uid, body, today));
+      if (r0 === 'radar' && method === 'GET') return send(await actRadar(uid, body, today));
       if (r0 === 'news' && r1 === 'today' && method === 'GET') return send(await actNewsToday(uid, body));
-      return res.status(404).json({ ok: false, message: `Ruta no encontrada: ${method} /${route}. Rutas: GET month · GET news/today · POST expenses · POST incomes · DELETE expenses/{id} · POST trades · POST trades/{id}/fill · DELETE trades/{id} · POST cash-balance · GET assets · GET positions · GET summary · GET alerts.` });
+      return res.status(404).json({ ok: false, message: `Ruta no encontrada: ${method} /${route}. Rutas: GET month · GET news/today · POST expenses · POST incomes · DELETE expenses/{id} · POST trades · POST trades/{id}/fill · DELETE trades/{id} · POST cash-balance · GET assets · GET positions · GET summary · GET alerts · GET radar.` });
     }
 
     // Interfaz por acciones (compatibilidad): { action, ... }
@@ -1782,6 +1811,7 @@ async function handleRequest(req, res) {
       save: () => actSave(uid, body, today),
       summary: async () => { const s2 = await buildSummary(uid, today); return ok(s2.message, s2.data); },
       alerts: () => actAlerts(uid, body, today),
+      radar: () => actRadar(uid, body, today),
       recent: () => actRecent(uid),
       assets: () => actAssets(uid),
       add_asset: () => actAddAsset(uid, body, today),
@@ -1807,7 +1837,7 @@ async function handleRequest(req, res) {
     if (action === 'undo' || action === 'delete_expense')
       return send(bad('Esta acción ya no existe: para borrar, usa DELETE /expenses/{id} (o action "delete_item" con el id). Los ids salen en GET /month.'));
     if (!map[action]) return send(bad(`Acción desconocida. Usa las rutas REST (GET /month, POST /expenses…) o una de: ${Object.keys(map).join(', ')}.`));
-    const READ = ['summary', 'alerts', 'recent', 'assets', 'pe_status', 'positions', 'news', 'news_today', 'month', 'selftest'];
+    const READ = ['summary', 'alerts', 'radar', 'recent', 'assets', 'pe_status', 'positions', 'news', 'news_today', 'month', 'selftest'];
     if (method === 'GET' && !READ.includes(action)) return send(bad('Esta acción escribe: usa POST, o GET con _method=POST.'));
     return send(await map[action]());
   } catch (e) {

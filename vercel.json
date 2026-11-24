@@ -4,6 +4,10 @@
     {
       "path": "/api/send-push",
       "schedule": "0 8 * * *"
+    },
+    {
+      "path": "/api/radar",
+      "schedule": "30 6 * * *"
     }
   ],
   "rewrites": [
