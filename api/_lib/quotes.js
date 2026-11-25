@@ -50,6 +50,16 @@ export async function resolveYahoo(pos, { fetchImpl = fetch } = {}) {
   if (pos.isin) {
     const j = await getJson(`${YS}/v1/finance/search?q=${encodeURIComponent(String(pos.isin).trim())}&quotesCount=10&newsCount=0`, fetchImpl);
     const sym = pickSymbol(j.quotes, ccy);
+    // La búsqueda por ISIN a veces solo trae otra bolsa (p. ej. Londres en USD): se prueba el ticker en las bolsas de la
+    // moneda de la posición y se usa si existe y cotiza en esa moneda. Si no, vale la del ISIN (el valor en € es correcto).
+    if (sym && !(SUFFIX_PREF[ccy] || []).includes(suffixOf(sym)) && t && !t.includes('.')) {
+      const tried = [];
+      for (const sfx of (SUFFIX_PREF[ccy] || []).filter(Boolean)) {
+        try { const q = await yahooQuote(t + sfx, { fetchImpl }); if (q.currency === ccy) return t + sfx; tried.push(`${t + sfx}: en ${q.currency}`); }
+        catch (e) { tried.push(`${t + sfx}: ${e.message}`); }   // esa bolsa no lo tiene: se prueba la siguiente
+      }
+      console.warn(`[precios] ${t}: sin línea en ${ccy} (${tried.join('; ')}); se usa ${sym}`);
+    }
     if (sym) return sym;
   }
   if (!t) throw new Error('la posición no tiene ticker ni ISIN');
@@ -71,8 +81,12 @@ export async function yahooQuote(symbol, { fetchImpl = fetch } = {}) {
   const ts = res.timestamp || [];
   const pts = ts.map((t, i) => ({ t, c: closes[i] })).filter(x => x.c != null && isFinite(x.c) && x.c > 0);
   if (!pts.length) throw new Error('sin cotizaciones recientes');
-  const last = pts[pts.length - 1], prev = pts.length > 1 ? pts[pts.length - 2] : null;
   const meta = res.meta || {};
+  // En Europa Yahoo suele dejar vacío el cierre de la última sesión en la serie y lo da en meta: si meta es más
+  // reciente que la última vela con precio, se usa meta y la última vela pasa a ser el cierre anterior.
+  const mt = +meta.regularMarketTime, mp = +meta.regularMarketPrice;
+  if (mp > 0 && mt && new Date(mt * 1000).toISOString().slice(0, 10) > new Date(pts[pts.length - 1].t * 1000).toISOString().slice(0, 10)) pts.push({ t: mt, c: mp });
+  const last = pts[pts.length - 1], prev = pts.length > 1 ? pts[pts.length - 2] : null;
   const n = normalizeCcy(last.c, meta.currency), p0 = prev ? normalizeCcy(prev.c, meta.currency).price : null;
   if (!n.currency) throw new Error('la fuente no indica la moneda');
   return { symbol, price: r4(n.price), currency: n.currency, date: new Date(last.t * 1000).toISOString().slice(0, 10),

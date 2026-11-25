@@ -78,6 +78,34 @@ check('12. Si falla, conserva 40 / 120 € y lo marca como antiguo con el motivo
 const nofx = { ticker: 'ACME', qty: 5 };
 check('13. Sin tipo del BCE para USD no se calcula el valor', applyQuote(nofx, out[2], { EUR: 1 }) === false && nofx.price_stale === true && nofx.value === undefined);
 
+// 17. Yahoo deja vacío el último cierre en Europa y lo da en meta: se usa el de meta con su fecha, frente al cierre anterior
+const metaLast = { chart: { result: [{ meta: { currency: 'EUR', exchangeName: 'GER', regularMarketPrice: 105, regularMarketTime: day('2026-01-08') },
+  timestamp: [day('2026-01-06'), day('2026-01-07'), day('2026-01-08')], indicators: { quote: [{ close: [100, 102, null] }] } }] } };
+q = await yahooQuote('MLST.DE', { fetchImpl: async () => J(metaLast) });
+check('17. Último cierre vacío: usa 105 EUR del 8 ene (meta), +2,94 % frente a 102', q.price === 105 && q.date === '2026-01-08' && q.change_pct === 2.94, JSON.stringify(q));
+// 18. Si meta no es más reciente que la última vela, manda la vela
+const metaOld = { chart: { result: [{ meta: { currency: 'EUR', regularMarketPrice: 99, regularMarketTime: day('2026-01-06') },
+  timestamp: [day('2026-01-06'), day('2026-01-07')], indicators: { quote: [{ close: [100, 102] }] } }] } };
+q = await yahooQuote('MOLD.DE', { fetchImpl: async () => J(metaOld) });
+check('18. Meta más antiguo que la última vela: manda la vela (102 del 7 ene)', q.price === 102 && q.date === '2026-01-07', JSON.stringify(q));
+
+// 19. El ISIN solo devuelve Londres (en USD) pero la posición es en EUR: prueba TICKER.DE y se queda con Xetra
+const onlyLondon = async (url) => {
+  const u = new URL(url);
+  if (u.pathname.includes('/v1/finance/search')) return J({ quotes: [{ symbol: 'LNDN.L', quoteType: 'ETF', exchange: 'LSE' }] });
+  const s = decodeURIComponent(u.pathname.split('/').pop());
+  if (s === 'LNDN.DE') return J({ chart: { result: null, error: { description: 'No data found' } } }, 404);
+  if (s === 'XTRA.DE') return J(chart('EUR', [50, 51]));
+  return J(chart('USD', [60, 61], 'LSE'));
+};
+sym = await resolveYahoo({ ticker: 'XTRA', isin: 'XX0000000009', currency: 'EUR' }, { fetchImpl: onlyLondon });
+check('19. ISIN solo en Londres y posición en EUR: elige XTRA.DE (Xetra, EUR)', sym === 'XTRA.DE', sym);
+// 20. Si tampoco existe en ninguna bolsa en EUR, se queda con la del ISIN (el valor en euros sigue siendo correcto)
+sym = await resolveYahoo({ ticker: 'LNDN', isin: 'XX0000000009', currency: 'EUR' }, { fetchImpl: async (url) => {
+  const u = new URL(url); if (u.pathname.includes('/v1/finance/search')) return J({ quotes: [{ symbol: 'LNDN.L', quoteType: 'ETF' }] });
+  return J({ chart: { result: null, error: { description: 'No data found' } } }, 404); } });
+check('20. Sin línea en EUR en ninguna bolsa: se queda con la del ISIN (LNDN.L)', sym === 'LNDN.L', sym);
+
 // 14. El endpoint exige sesión
 const prices = (await import('../api/prices.js')).default;
 let o = {}; const res = { setHeader() {}, status(c) { o.status = c; return this; }, json(b) { o.body = b; return this; } };
